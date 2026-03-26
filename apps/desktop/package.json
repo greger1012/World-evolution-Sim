@@ -1,0 +1,13 @@
+{
+  "name": "@evo-world-sim/desktop",
+  "private": true,
+  "main": "main.cjs",
+  "scripts": {
+    "dev": "cross-env EVO_ELECTRON_DEV=1 electron .",
+    "start": "electron ."
+  },
+  "devDependencies": {
+    "cross-env": "^7.0.3",
+    "electron": "^33.2.1"
+  }
+}
