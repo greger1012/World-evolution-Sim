@@ -25,12 +25,16 @@ app.innerHTML = `
     <section class="panel">
       <header><h2>Stratified globe</h2></header>
       <p class="hint">Click a sector to open its regional patch.</p>
-      <canvas id="globe-canvas" width="600" height="400" aria-label="Globe regions"></canvas>
+      <div class="canvas-wrap">
+        <canvas id="globe-canvas" width="600" height="400" aria-label="Globe regions"></canvas>
+      </div>
     </section>
     <section class="panel">
       <header><h2>Regional patch</h2></header>
       <p class="hint" id="patch-hint">Globe view — select a region for local biomass.</p>
-      <canvas id="patch-canvas" width="600" height="400" aria-label="Regional patch"></canvas>
+      <div class="canvas-wrap">
+        <canvas id="patch-canvas" width="600" height="400" aria-label="Regional patch"></canvas>
+      </div>
     </section>
   </main>
 `;
@@ -69,27 +73,29 @@ globeBtn.addEventListener("click", () => {
   patchHint.textContent = "Globe view — select a region for local biomass.";
 });
 
-function resizeCanvas(canvas: HTMLCanvasElement, parent: HTMLElement): void {
+function resizeCanvas(canvas: HTMLCanvasElement, wrap: HTMLElement): void {
   const dpr = Math.min(2, window.devicePixelRatio || 1);
-  const w = Math.max(200, Math.floor(parent.clientWidth - 16));
-  const h = Math.max(200, Math.floor(parent.clientHeight - 56));
-  canvas.width = Math.floor(w * dpr);
-  canvas.height = Math.floor(h * dpr);
-  canvas.style.width = `${w}px`;
-  canvas.style.height = `${h}px`;
+  const w = Math.max(1, Math.floor(wrap.clientWidth));
+  const h = Math.max(1, Math.floor(wrap.clientHeight));
+  const nextW = Math.floor(w * dpr);
+  const nextH = Math.floor(h * dpr);
+  if (canvas.width !== nextW || canvas.height !== nextH) {
+    canvas.width = nextW;
+    canvas.height = nextH;
+  }
   const ctx = canvas.getContext("2d");
   if (ctx) ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 }
 
-const globePanel = globeCanvas.parentElement!;
-const patchPanel = patchCanvas.parentElement!;
+const globeWrap = globeCanvas.parentElement!;
+const patchWrap = patchCanvas.parentElement!;
 
 const ro = new ResizeObserver(() => {
-  resizeCanvas(globeCanvas, globePanel);
-  resizeCanvas(patchCanvas, patchPanel);
+  resizeCanvas(globeCanvas, globeWrap);
+  resizeCanvas(patchCanvas, patchWrap);
 });
-ro.observe(globePanel);
-ro.observe(patchPanel);
+ro.observe(globeWrap);
+ro.observe(patchWrap);
 
 let last = performance.now();
 
