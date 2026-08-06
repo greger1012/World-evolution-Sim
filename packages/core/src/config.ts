@@ -2,9 +2,12 @@ import type { SimulationConfig } from "./types.js";
 
 export const defaultSimulationConfig: SimulationConfig = {
   regionCount: 24,
-  patchSize: 48,
-  baseSimRate: 1,
+  patchSize: 60,
+  baseSimRate: 6,
   maxSubStep: 0.2,
+  maxSubStepsPerFrame: 24,
+  initialCreatures: 18,
+  maxCreatures: 70,
 };
 
 /** UI-oriented speed presets; core accepts any positive multiplier. */
