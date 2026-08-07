@@ -94,14 +94,17 @@ export class EvolutionSimulation {
    */
   advance(realDeltaMs: number): void {
     if (this.time.paused) return;
-    const simSeconds =
+    let simSeconds =
       (realDeltaMs / 1000) * this.config.baseSimRate * this.time.speedMultiplier;
     if (simSeconds <= 0) return;
 
-    // Bound the sub-step count so extreme fast-forward stays responsive while
-    // still advancing the full simulated interval.
+    // Keep the integration step no larger than maxSubStep so agent behaviour
+    // (chasing, catching, foraging) stays valid at high speed multipliers.
+    // Past a point this caps the *effective* fast-forward rather than growing
+    // the step, trading raw speed for a stable, correct simulation.
+    const maxPerFrame = this.config.maxSubStepsPerFrame * this.config.maxSubStep;
+    if (simSeconds > maxPerFrame) simSeconds = maxPerFrame;
     let steps = Math.ceil(simSeconds / this.config.maxSubStep);
-    if (steps > this.config.maxSubStepsPerFrame) steps = this.config.maxSubStepsPerFrame;
     if (steps < 1) steps = 1;
     const h = simSeconds / steps;
 
