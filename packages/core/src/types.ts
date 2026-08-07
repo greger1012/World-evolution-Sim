@@ -49,21 +49,33 @@ export type Genome = {
   size: number;
   /** Movement speed factor. */
   speed: number;
-  /** Perception radius in world units for locating food. */
+  /** Perception radius in world units for locating food/threats. */
   sense: number;
+  /** Trophic tendency: 0 = pure herbivore (plants), 1 = pure carnivore (prey). */
+  diet: number;
   /** Lineage colour in degrees (0–360); mutates slowly to visualise descent. */
   hue: number;
 };
 
-/** Per-creature snapshot for rendering the active arena. */
+/** Per-creature snapshot for rendering + inspecting the active arena. */
 export type CreatureView = {
+  /** Stable identity, so the UI can track a selected creature across frames. */
+  id: number;
   x: number;
   y: number;
   radius: number;
   hue: number;
-  /** 0–1 normalized energy for brightness. */
+  /** 0–1 normalized energy (food reserve) for brightness. */
   energy: number;
+  /** 0–1 body condition; drops when starving, regenerates when well fed. */
+  health: number;
+  speed: number;
   sense: number;
+  /** 0–1 trophic tendency (see Genome.diet). */
+  diet: number;
+  /** Age in simulated seconds. */
+  age: number;
+  generation: number;
 };
 
 export type FoodView = {
@@ -78,6 +90,9 @@ export type ArenaStats = {
   meanSize: number;
   meanSpeed: number;
   meanSense: number;
+  meanHealth: number;
+  /** Fraction of the population that behaves as predators (diet >= 0.5). */
+  carnivoreFraction: number;
   births: number;
   deaths: number;
 };

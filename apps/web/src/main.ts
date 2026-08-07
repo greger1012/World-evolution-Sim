@@ -4,6 +4,7 @@ import {
   EvolutionSimulation,
   speedPresets,
 } from "@evo-world-sim/core";
+import type { ArenaStats } from "@evo-world-sim/core";
 
 const sim = new EvolutionSimulation({ ...defaultSimulationConfig });
 const cfg = sim.getConfig();
@@ -55,6 +56,8 @@ for (const s of speedPresets) {
 }
 speedSel.value = "1";
 
+let selectedCreatureId: number | null = null;
+
 speedSel.addEventListener("change", () => {
   sim.setSpeedMultiplier(Number(speedSel.value));
 });
@@ -68,6 +71,7 @@ pauseBtn.addEventListener("click", () => {
 
 globeBtn.addEventListener("click", () => {
   sim.setActiveRegion(null);
+  selectedCreatureId = null;
   globeBtn.disabled = true;
   globeBtn.classList.add("active");
   patchHint.textContent = "Globe view — select a region to watch its creatures evolve.";
@@ -269,33 +273,125 @@ function drawArena(): void {
   }
 
   // Creatures.
+  let selected: (typeof creatures)[number] | null = null;
   for (const c of creatures) {
+    if (c.id === selectedCreatureId) selected = c;
     const px = ox + c.x * scale;
     const py = oy + c.y * scale;
     const r = Math.max(1.5, c.radius * scale);
     const light = 32 + c.energy * 34;
+    const predator = c.diet >= 0.5;
     ctx.fillStyle = `hsl(${c.hue} 70% ${light}%)`;
-    ctx.strokeStyle = `hsl(${c.hue} 75% ${Math.min(88, light + 22)}%)`;
-    ctx.lineWidth = 1;
     ctx.beginPath();
     ctx.arc(px, py, r, 0, Math.PI * 2);
     ctx.fill();
+    // Trophic cue: predators get a bold red ring, herbivores a soft light ring.
+    if (predator) {
+      ctx.strokeStyle = "#ff5a5a";
+      ctx.lineWidth = 2;
+    } else {
+      ctx.strokeStyle = `hsl(${c.hue} 75% ${Math.min(88, light + 24)}%)`;
+      ctx.lineWidth = 1;
+    }
     ctx.stroke();
   }
 
-  // Stats overlay.
-  const s = view.activeStats;
-  if (s) {
-    ctx.textAlign = "left";
-    ctx.font = "11px system-ui,sans-serif";
+  // Selected creature: highlight ring + a small health bar.
+  if (selected) {
+    const px = ox + selected.x * scale;
+    const py = oy + selected.y * scale;
+    const r = Math.max(1.5, selected.radius * scale);
+    ctx.strokeStyle = "#ffffff";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(px, py, r + 4, 0, Math.PI * 2);
+    ctx.stroke();
+
+    const barW = Math.max(20, r * 3);
+    const barX = px - barW / 2;
+    const barY = py - r - 10;
+    ctx.fillStyle = "rgba(0,0,0,0.55)";
+    ctx.fillRect(barX - 1, barY - 1, barW + 2, 5);
+    ctx.fillStyle = "#4fd07a";
+    ctx.fillRect(barX, barY, barW * selected.health, 3);
+  }
+
+  drawArenaOverlay(ctx, ox, oy, view.activeStats, selected);
+}
+
+function dietLabel(diet: number): string {
+  if (diet >= 0.66) return "Carnivore";
+  if (diet >= 0.34) return "Omnivore";
+  return "Herbivore";
+}
+
+function drawArenaOverlay(
+  ctx: CanvasRenderingContext2D,
+  ox: number,
+  oy: number,
+  stats: ArenaStats | null,
+  selected:
+    | { id: number; radius: number; speed: number; sense: number; diet: number; hue: number; energy: number; health: number; age: number; generation: number }
+    | null,
+): void {
+  ctx.textAlign = "left";
+  ctx.font = "11px system-ui,sans-serif";
+
+  // Compact population summary line.
+  if (stats) {
     ctx.fillStyle = "rgba(10,14,20,0.55)";
-    ctx.fillRect(ox + 6, oy + 6, 172, 74);
+    ctx.fillRect(ox + 6, oy + 6, 214, 20);
     ctx.fillStyle = "#e8ecf4";
-    ctx.fillText(`pop ${s.population}   gen ${s.generation}`, ox + 14, oy + 22);
-    ctx.fillStyle = "#a7b2c4";
-    ctx.fillText(`size ${s.meanSize.toFixed(2)}`, ox + 14, oy + 38);
-    ctx.fillText(`speed ${s.meanSpeed.toFixed(2)}`, ox + 14, oy + 52);
-    ctx.fillText(`sense ${s.meanSense.toFixed(2)}`, ox + 14, oy + 66);
+    const carn = (stats.carnivoreFraction * 100).toFixed(0);
+    ctx.fillText(
+      `pop ${stats.population} · gen ${stats.generation} · carnivores ${carn}%`,
+      ox + 12,
+      oy + 20,
+    );
+  }
+
+  if (!selected) {
+    ctx.fillStyle = "#8b95a8";
+    ctx.fillText("Click a blob to inspect its stats", ox + 12, oy + 42);
+    return;
+  }
+
+  const rows = [
+    ["diet", `${dietLabel(selected.diet)} (${selected.diet.toFixed(2)})`],
+    ["health", selected.health.toFixed(2)],
+    ["energy", selected.energy.toFixed(2)],
+    ["size", selected.radius.toFixed(2)],
+    ["speed", selected.speed.toFixed(2)],
+    ["sense", selected.sense.toFixed(2)],
+    ["age", `${selected.age.toFixed(1)} / 55`],
+    ["gen", String(selected.generation)],
+  ];
+  const boxX = ox + 6;
+  const boxY = oy + 32;
+  const boxW = 176;
+  const boxH = 26 + rows.length * 15;
+  ctx.fillStyle = "rgba(8,12,18,0.78)";
+  ctx.fillRect(boxX, boxY, boxW, boxH);
+  ctx.strokeStyle = "rgba(150,180,220,0.35)";
+  ctx.lineWidth = 1;
+  ctx.strokeRect(boxX, boxY, boxW, boxH);
+
+  ctx.fillStyle = `hsl(${selected.hue} 70% 55%)`;
+  ctx.beginPath();
+  ctx.arc(boxX + 12, boxY + 14, 5, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = "#e8ecf4";
+  ctx.font = "600 11px system-ui,sans-serif";
+  ctx.fillText(`Creature #${selected.id}`, boxX + 24, boxY + 18);
+
+  ctx.font = "11px system-ui,sans-serif";
+  let y = boxY + 36;
+  for (const [k, v] of rows) {
+    ctx.fillStyle = "#8b95a8";
+    ctx.fillText(k!, boxX + 12, y);
+    ctx.fillStyle = "#dbe3ef";
+    ctx.fillText(v!, boxX + 74, y);
+    y += 15;
   }
 }
 
@@ -319,9 +415,34 @@ globeCanvas.addEventListener("click", (e) => {
   const id = sectorFromGlobeClick(e.clientX, e.clientY);
   if (id === null) return;
   sim.setActiveRegion(id);
+  selectedCreatureId = null;
   globeBtn.disabled = false;
   globeBtn.classList.remove("active");
-  patchHint.textContent = `Region ${id} — living arena (blobs sense, eat, breed, mutate)`;
+  patchHint.textContent = `Region ${id} — click a blob to inspect it`;
+});
+
+patchCanvas.addEventListener("click", (e) => {
+  const view = sim.getView();
+  const creatures = view.activeCreatures;
+  if (!creatures) return;
+  const { w, h } = logicalCanvasSize(patchCanvas);
+  const { scale, ox, oy } = arenaTransform(w, h, view.arenaSize);
+  const rect = patchCanvas.getBoundingClientRect();
+  const px = e.clientX - rect.left;
+  const py = e.clientY - rect.top;
+  let picked: number | null = null;
+  let bestD = Infinity;
+  for (const c of creatures) {
+    const cxp = ox + c.x * scale;
+    const cyp = oy + c.y * scale;
+    const rp = Math.max(4, c.radius * scale);
+    const d = Math.hypot(px - cxp, py - cyp);
+    if (d <= rp + 5 && d < bestD) {
+      bestD = d;
+      picked = c.id;
+    }
+  }
+  selectedCreatureId = picked;
 });
 
 function frame(now: number): void {

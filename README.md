@@ -66,10 +66,11 @@ Or use the workspace scripts in `package.json` to run web and Electron together.
 
 ## How to use the current UI
 
-1. Watch the **stratified globe** update as the simulation runs.
-2. Use the **speed** dropdown to accelerate or slow time.
+1. Watch the **stratified globe** (a shaded sphere) update as the simulation runs; wedge colour reflects each region's living biomass.
+2. Use the **speed** dropdown to accelerate or slow time (evolution runs faster at higher multipliers).
 3. **Pause / Resume** to freeze the world state.
-4. **Click a globe sector** to inspect that region’s local biomass patch; return with the Globe control.
+4. **Click a region** on the globe to open its **living arena**: creatures ("blobs") with heritable traits (size, speed, sense, diet) graze plants, flee or hunt each other, reproduce with mutation, and die. Herbivores carry a soft ring; **predators carry a bold red ring**.
+5. **Click a blob** to select it and read its individual stats (diet, health, energy, size, speed, sense, age, generation); the selected blob shows a health bar. Return to the globe with the Globe control.
 
 ## Scripts
 
@@ -83,11 +84,13 @@ Or use the workspace scripts in `package.json` to run web and Electron together.
 
 | Area | Status |
 | --- | --- |
-| Globe / regions / time controls | Early prototype |
-| Biomass patch view | Early prototype |
-| Organism / trait / lineage model | Planned |
+| Globe / regions / time controls | Working prototype |
+| Regional creature arena (agents, food) | Working prototype |
+| Trait genomes + mutation + selection | Working prototype |
+| Predator / prey dynamics | Working prototype |
+| Per-creature inspection (click a blob) | Working prototype |
 | Detailed environments & biomes | Planned |
-| Selection, mutation, speciation | Planned |
+| Cross-region migration | Planned |
 
 Feedback and contributions can wait until the core evolution model is further along; the public surface will keep changing.
 
