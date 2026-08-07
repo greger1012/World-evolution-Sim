@@ -70,8 +70,8 @@ const REPRO_HEALTH_MIN = 0.5; // must be at least this healthy to breed
 // Predation.
 const PREY_MAX_RATIO = 1.4; // predator can catch prey up to this * own size
 const CATCH_REACH = 0.9; // extra lunge distance when striking prey
-const MEAT_ENERGY_K = 0.9; // energy per unit of prey body size
-const MEAT_ENERGY_CAP = 1.6;
+const MEAT_ENERGY_K = 1.0; // energy per unit of prey body size
+const MEAT_ENERGY_CAP = 1.9;
 
 const FOOD_RADIUS = 0.35;
 const FOOD_BASE_CAPACITY = 130; // * richness -> per-region plant carrying capacity
