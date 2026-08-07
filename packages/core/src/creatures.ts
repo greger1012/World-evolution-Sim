@@ -38,7 +38,9 @@ const GENE_BOUNDS = {
 };
 const MUTATION_RATE = 0.09; // multiplicative log-normal spread per gene
 const HUE_MUTATION = 10; // degrees stddev
-const DIET_MUTATION = 0.06; // additive stddev on diet in [0,1]
+const DIET_MUTATION = 0.04; // additive stddev on diet in [0,1]
+const DIET_INNOVATION_CHANCE = 0.02; // chance of a larger diet jump
+const DIET_INNOVATION_STEP = 0.22; // stddev of that larger jump
 
 const MOVE_SPEED = 3.2; // world units/sec per unit of `speed`
 const TURN_JITTER = 2.2; // wander turn rate scale
@@ -70,11 +72,11 @@ const REPRO_HEALTH_MIN = 0.5; // must be at least this healthy to breed
 // Predation.
 const PREY_MAX_RATIO = 1.4; // predator can catch prey up to this * own size
 const CATCH_REACH = 0.9; // extra lunge distance when striking prey
-const MEAT_ENERGY_K = 1.0; // energy per unit of prey body size
-const MEAT_ENERGY_CAP = 1.9;
+const MEAT_ENERGY_K = 0.8; // energy per unit of prey body size
+const MEAT_ENERGY_CAP = 1.35;
 
 const FOOD_RADIUS = 0.35;
-const FOOD_BASE_CAPACITY = 130; // * richness -> per-region plant carrying capacity
+const FOOD_BASE_CAPACITY = 135; // * richness -> per-region plant carrying capacity
 const FOOD_REGROW = 1.0; // regrowth rate toward capacity (per sec)
 
 type Creature = {
@@ -113,11 +115,15 @@ function mutate(g: Genome, rng: () => number): Genome {
     clamp(v * Math.exp(gaussian(rng) * MUTATION_RATE), lo, hi);
   let hue = g.hue + gaussian(rng) * HUE_MUTATION;
   hue = ((hue % 360) + 360) % 360;
+  // Diet normally drifts slowly (niches stay stable), but a rare "innovation"
+  // makes a larger jump so carnivory keeps re-seeding from herbivore stock and
+  // the predator niche recovers after a crash instead of vanishing for good.
+  const dietStep = rng() < DIET_INNOVATION_CHANCE ? DIET_INNOVATION_STEP : DIET_MUTATION;
   return {
     size: jitter(g.size, GENE_BOUNDS.size[0], GENE_BOUNDS.size[1]),
     speed: jitter(g.speed, GENE_BOUNDS.speed[0], GENE_BOUNDS.speed[1]),
     sense: jitter(g.sense, GENE_BOUNDS.sense[0], GENE_BOUNDS.sense[1]),
-    diet: clamp(g.diet + gaussian(rng) * DIET_MUTATION, 0, 1),
+    diet: clamp(g.diet + gaussian(rng) * dietStep, 0, 1),
     hue,
   };
 }
