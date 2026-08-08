@@ -37,6 +37,20 @@ app.innerHTML = `
         <canvas id="patch-canvas" width="600" height="400" aria-label="Regional arena"></canvas>
       </div>
     </section>
+    <section class="panel">
+      <header><h2>Population history</h2></header>
+      <p class="hint">World population over time, coloured by species.</p>
+      <div class="canvas-wrap">
+        <canvas id="history-canvas" width="600" height="300" aria-label="Population history"></canvas>
+      </div>
+    </section>
+    <section class="panel">
+      <header><h2>Phylogeny</h2></header>
+      <p class="hint">Species lifespans and descent; bars end at extinction.</p>
+      <div class="canvas-wrap">
+        <canvas id="phylo-canvas" width="600" height="300" aria-label="Phylogeny"></canvas>
+      </div>
+    </section>
   </main>
 `;
 
@@ -47,6 +61,8 @@ const globeBtn = document.querySelector<HTMLButtonElement>("#globe")!;
 const patchHint = document.querySelector<HTMLParagraphElement>("#patch-hint")!;
 const globeCanvas = document.querySelector<HTMLCanvasElement>("#globe-canvas")!;
 const patchCanvas = document.querySelector<HTMLCanvasElement>("#patch-canvas")!;
+const historyCanvas = document.querySelector<HTMLCanvasElement>("#history-canvas")!;
+const phyloCanvas = document.querySelector<HTMLCanvasElement>("#phylo-canvas")!;
 
 for (const s of speedPresets) {
   const opt = document.createElement("option");
@@ -91,15 +107,16 @@ function resizeCanvas(canvas: HTMLCanvasElement, wrap: HTMLElement): void {
   if (ctx) ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 }
 
-const globeWrap = globeCanvas.parentElement!;
-const patchWrap = patchCanvas.parentElement!;
-
+const observedCanvases: [HTMLCanvasElement, HTMLElement][] = [
+  [globeCanvas, globeCanvas.parentElement!],
+  [patchCanvas, patchCanvas.parentElement!],
+  [historyCanvas, historyCanvas.parentElement!],
+  [phyloCanvas, phyloCanvas.parentElement!],
+];
 const ro = new ResizeObserver(() => {
-  resizeCanvas(globeCanvas, globeWrap);
-  resizeCanvas(patchCanvas, patchWrap);
+  for (const [canvas, wrap] of observedCanvases) resizeCanvas(canvas, wrap);
 });
-ro.observe(globeWrap);
-ro.observe(patchWrap);
+for (const [, wrap] of observedCanvases) ro.observe(wrap);
 
 let last = performance.now();
 
@@ -345,6 +362,7 @@ function drawArenaOverlay(
   selected:
     | {
         id: number;
+        speciesId: number;
         radius: number;
         speed: number;
         effSpeed: number;
@@ -387,7 +405,9 @@ function drawArenaOverlay(
     : selected.readyToMate
       ? "seeking mate"
       : "recovering";
+  const speciesName = sim.getSpeciesById(selected.speciesId)?.name ?? "unknown";
   const rows = [
+    ["species", speciesName],
     ["diet", `${dietLabel(selected.diet)} (${selected.diet.toFixed(2)})`],
     ["health", selected.health.toFixed(2)],
     ["energy", selected.energy.toFixed(2)],
@@ -425,6 +445,194 @@ function drawArenaOverlay(
     ctx.fillText(v!, boxX + 74, y);
     y += 15;
   }
+}
+
+function speciesColor(hue: number, alive: boolean): string {
+  return `hsl(${hue} 70% ${alive ? 58 : 38}%)`;
+}
+
+function drawHistory(): void {
+  const ctx = historyCanvas.getContext("2d");
+  if (!ctx) return;
+  const { w, h } = logicalCanvasSize(historyCanvas);
+  ctx.clearRect(0, 0, w, h);
+
+  const samples = sim.getHistory();
+  if (samples.length < 2) {
+    ctx.fillStyle = "#2a3140";
+    ctx.font = "12px system-ui,sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText("Gathering history…", w / 2, h / 2);
+    return;
+  }
+
+  const species = sim.getSpecies();
+  const top = species
+    .filter((s) => s.extinctAt === null && s.population > 0)
+    .sort((a, b) => b.population - a.population)
+    .slice(0, 7);
+
+  const legendH = 20;
+  const padL = 34;
+  const padR = 8;
+  const padT = 8;
+  const chartH = h - legendH - padT - 14;
+  const t0 = samples[0]!.t;
+  const t1 = samples[samples.length - 1]!.t;
+  const tSpan = Math.max(1e-6, t1 - t0);
+  let maxPop = 10;
+  for (const s of samples) maxPop = Math.max(maxPop, s.totalPopulation);
+
+  const x = (t: number) => padL + ((t - t0) / tSpan) * (w - padL - padR);
+  const y = (p: number) => padT + chartH - (p / maxPop) * chartH;
+
+  // Axes.
+  ctx.strokeStyle = "#242c3a";
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(padL, padT);
+  ctx.lineTo(padL, padT + chartH);
+  ctx.lineTo(w - padR, padT + chartH);
+  ctx.stroke();
+  ctx.fillStyle = "#5d6a80";
+  ctx.font = "9px system-ui,sans-serif";
+  ctx.textAlign = "right";
+  ctx.fillText(String(maxPop), padL - 4, padT + 8);
+  ctx.fillText("0", padL - 4, padT + chartH);
+
+  // Total population.
+  ctx.strokeStyle = "#4a5568";
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  for (let i = 0; i < samples.length; i++) {
+    const s = samples[i]!;
+    const px = x(s.t);
+    const py = y(s.totalPopulation);
+    if (i === 0) ctx.moveTo(px, py);
+    else ctx.lineTo(px, py);
+  }
+  ctx.stroke();
+
+  // Per-species lines.
+  for (const sp of top) {
+    ctx.strokeStyle = speciesColor(sp.hue, true);
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    let started = false;
+    for (const s of samples) {
+      let pop = 0;
+      for (const [id, p] of s.populations) {
+        if (id === sp.id) {
+          pop = p;
+          break;
+        }
+      }
+      const px = x(s.t);
+      const py = y(pop);
+      if (!started) {
+        ctx.moveTo(px, py);
+        started = true;
+      } else ctx.lineTo(px, py);
+    }
+    ctx.stroke();
+  }
+
+  // Legend.
+  ctx.font = "10px system-ui,sans-serif";
+  ctx.textAlign = "left";
+  let lx = padL;
+  const ly = h - 7;
+  for (const sp of top) {
+    ctx.fillStyle = speciesColor(sp.hue, true);
+    ctx.beginPath();
+    ctx.arc(lx + 3, ly - 3, 3, 0, Math.PI * 2);
+    ctx.fill();
+    const label = `${sp.name} ${sp.population}`;
+    ctx.fillStyle = "#a7b2c4";
+    ctx.fillText(label, lx + 9, ly);
+    lx += 18 + ctx.measureText(label).width;
+    if (lx > w - 60) break;
+  }
+}
+
+function drawPhylo(): void {
+  const ctx = phyloCanvas.getContext("2d");
+  if (!ctx) return;
+  const { w, h } = logicalCanvasSize(phyloCanvas);
+  ctx.clearRect(0, 0, w, h);
+
+  const view = sim.getView();
+  const now = Math.max(1e-6, view.summary.simTime);
+  const all = sim.getSpecies();
+
+  // Show every living species plus the most significant extinct ones.
+  const living = all.filter((s) => s.extinctAt === null);
+  const extinct = all
+    .filter((s) => s.extinctAt !== null)
+    .sort((a, b) => b.peakPopulation - a.peakPopulation);
+  const maxRows = Math.max(4, Math.floor((h - 22) / 14));
+  const kept = [...living, ...extinct]
+    .slice(0, maxRows)
+    .sort((a, b) => a.foundedAt - b.foundedAt);
+  if (kept.length === 0) return;
+
+  const rowOf = new Map<number, number>();
+  kept.forEach((s, i) => rowOf.set(s.id, i));
+
+  const padL = 8;
+  const padR = 8;
+  const x = (t: number) => padL + (t / now) * (w - padL - padR);
+  const rowY = (i: number) => 10 + i * 14;
+
+  for (const sp of kept) {
+    const i = rowOf.get(sp.id)!;
+    const yy = rowY(i);
+    const alive = sp.extinctAt === null;
+    const xStart = x(sp.foundedAt);
+    const xEnd = alive ? x(now) : x(sp.extinctAt!);
+
+    // Descent connector to the parent's row.
+    if (sp.parentId !== null && rowOf.has(sp.parentId)) {
+      const py = rowY(rowOf.get(sp.parentId)!);
+      ctx.strokeStyle = "rgba(139,149,168,0.3)";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(xStart, py);
+      ctx.lineTo(xStart, yy);
+      ctx.stroke();
+    }
+
+    ctx.strokeStyle = speciesColor(sp.hue, alive);
+    ctx.lineWidth = alive ? 4 : 3;
+    ctx.beginPath();
+    ctx.moveTo(xStart, yy);
+    ctx.lineTo(Math.max(xEnd, xStart + 2), yy);
+    ctx.stroke();
+
+    if (sp.trophic === "carnivore") {
+      ctx.fillStyle = "#ff5a5a";
+      ctx.beginPath();
+      ctx.arc(xStart, yy, 2.5, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    if (xEnd - xStart > 44 || alive) {
+      ctx.fillStyle = alive ? "#dbe3ef" : "#6b7788";
+      ctx.font = "9px system-ui,sans-serif";
+      ctx.textAlign = "left";
+      const lx = Math.min(Math.max(xStart + 3, padL), w - 70);
+      ctx.fillText(alive ? `${sp.name} (${sp.population})` : sp.name, lx, yy - 4);
+    }
+  }
+
+  ctx.fillStyle = "#5d6a80";
+  ctx.font = "9px system-ui,sans-serif";
+  ctx.textAlign = "right";
+  ctx.fillText(
+    `${all.length} species recorded · ${living.length} living · red dot = carnivore`,
+    w - 8,
+    h - 6,
+  );
 }
 
 function sectorFromGlobeClick(clientX: number, clientY: number): number | null {
@@ -485,12 +693,14 @@ function frame(now: number): void {
   statsEl.innerHTML = `
     <span>Tick <strong>${view.summary.tick}</strong></span>
     <span>Creatures <strong>${view.summary.totalPopulation}</strong></span>
-    <span>Biomass <strong>${view.summary.totalBiomass.toFixed(2)}</strong></span>
+    <span>Species <strong>${view.summary.livingSpecies}</strong></span>
     <span>Diversity <strong>${view.summary.meanDiversity.toFixed(3)}</strong></span>
     <span>Speed <strong>${view.time.speedMultiplier}×</strong>${view.time.paused ? " (paused)" : ""}</span>
   `;
   drawGlobe();
   drawArena();
+  drawHistory();
+  drawPhylo();
   requestAnimationFrame(frame);
 }
 

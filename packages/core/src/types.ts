@@ -1,9 +1,39 @@
 /** Planet-wide aggregates (stratum above regions). */
 export type GlobeSummary = {
   tick: number;
+  /** Simulated seconds elapsed since the world began. */
+  simTime: number;
   totalBiomass: number;
   meanDiversity: number;
   totalPopulation: number;
+  /** Number of species with living members. */
+  livingSpecies: number;
+};
+
+/** A species: a named breeding lineage tracked from founding to extinction. */
+export type SpeciesRecord = {
+  id: number;
+  name: string;
+  /** Species this one split from; null for founder species. */
+  parentId: number | null;
+  /** Representative lineage colour (circular mean of members). */
+  hue: number;
+  trophic: "herbivore" | "carnivore";
+  /** Sim-time when the species appeared. */
+  foundedAt: number;
+  /** Sim-time when the last member died; null while extant. */
+  extinctAt: number | null;
+  population: number;
+  peakPopulation: number;
+};
+
+/** One point of recorded world history. */
+export type HistorySample = {
+  /** Sim-time of the sample. */
+  t: number;
+  totalPopulation: number;
+  /** [speciesId, population] pairs for species alive at the time. */
+  populations: [number, number][];
 };
 
 export type RegionState = {
@@ -63,6 +93,8 @@ export type Genome = {
 export type CreatureView = {
   /** Stable identity, so the UI can track a selected creature across frames. */
   id: number;
+  /** Species this creature belongs to (see SpeciesRecord). */
+  speciesId: number;
   x: number;
   y: number;
   radius: number;
