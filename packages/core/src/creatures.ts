@@ -102,8 +102,10 @@ const FOOD_RADIUS = 0.35;
 const FOOD_BASE_CAPACITY = 135; // * richness -> per-region plant carrying capacity
 const FOOD_REGROW = 1.0; // regrowth rate toward capacity (per sec)
 
-type Creature = {
+export type Creature = {
   id: number;
+  /** Species tag; inherited from parents, -1 until the registry assigns one. */
+  speciesId: number;
   x: number;
   y: number;
   heading: number;
@@ -121,7 +123,7 @@ type Creature = {
 
 type Food = { x: number; y: number };
 
-function isPredator(g: Genome): boolean {
+export function isPredator(g: Genome): boolean {
   return g.diet >= 0.5;
 }
 
@@ -224,13 +226,21 @@ export class RegionEcosystem {
     for (let i = 0; i < startFood; i++) this.food.push(this.randomPoint());
 
     for (let i = 0; i < opts.initialCreatures; i++) {
-      this.creatures.push(this.spawn(randomGenome(this.rng, true), 0, START_ENERGY));
+      this.creatures.push(this.spawn(randomGenome(this.rng, true), 0, START_ENERGY, -1));
     }
   }
 
-  private spawn(genome: Genome, generation: number, energy: number, x?: number, y?: number): Creature {
+  private spawn(
+    genome: Genome,
+    generation: number,
+    energy: number,
+    speciesId: number,
+    x?: number,
+    y?: number,
+  ): Creature {
     return {
       id: this.nextId++,
+      speciesId,
       x: x ?? this.rng() * this.size,
       y: y ?? this.rng() * this.size,
       heading: this.rng() * Math.PI * 2,
@@ -261,6 +271,11 @@ export class RegionEcosystem {
     let n = 0;
     for (const c of this.creatures) if (isPredator(c.genome)) n++;
     return n;
+  }
+
+  /** Live internal creature refs, for the species registry. Do not mutate. */
+  creaturesRef(): readonly Creature[] {
+    return this.creatures;
   }
 
   step(dt: number): void {
@@ -334,7 +349,7 @@ export class RegionEcosystem {
     // world keeps exploring rather than staying empty forever.
     if (this.creatures.length === 0 && this.food.length > 4) {
       for (let i = 0; i < 4; i++) {
-        this.creatures.push(this.spawn(randomGenome(this.rng, false), 0, START_ENERGY));
+        this.creatures.push(this.spawn(randomGenome(this.rng, false), 0, START_ENERGY, -1));
       }
     }
   }
@@ -400,6 +415,7 @@ export class RegionEcosystem {
         genome,
         gen,
         CHILD_ENERGY,
+        near.speciesId,
         clamp(near.x + (this.rng() - 0.5) * 2, 0, this.size),
         clamp(near.y + (this.rng() - 0.5) * 2, 0, this.size),
       ),
@@ -621,6 +637,7 @@ export class RegionEcosystem {
       const c = this.creatures[i]!;
       out[i] = {
         id: c.id,
+        speciesId: c.speciesId,
         x: c.x,
         y: c.y,
         radius: c.genome.size,

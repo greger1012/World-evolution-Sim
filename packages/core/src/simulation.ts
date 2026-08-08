@@ -1,16 +1,30 @@
 import { RegionEcosystem } from "./creatures.js";
+import type { Creature } from "./creatures.js";
 import { regionRichness, regionSeed } from "./globe.js";
+import { SpeciesRegistry } from "./species.js";
 import type {
+  HistorySample,
   ReadonlySimulationView,
   RegionState,
   SimulationConfig,
+  SpeciesRecord,
   TimeControls,
 } from "./types.js";
+
+const REGISTRY_REFRESH_INTERVAL = 1; // sim-seconds between species refreshes
+const HISTORY_SAMPLE_INTERVAL = 2; // sim-seconds between history samples
+const HISTORY_CAPACITY = 512; // samples kept; interval doubles when full
 
 export class EvolutionSimulation {
   private readonly config: SimulationConfig;
   private readonly ecosystems: RegionEcosystem[];
+  private readonly registry: SpeciesRegistry;
   private tick = 0;
+  private simTime = 0;
+  private lastRegistryRefresh = 0;
+  private history: HistorySample[] = [];
+  private historyInterval = HISTORY_SAMPLE_INTERVAL;
+  private lastHistorySample = 0;
   private activeRegionId: number | null = null;
   private time: TimeControls = { paused: false, speedMultiplier: 1 };
 
@@ -28,6 +42,9 @@ export class EvolutionSimulation {
         }),
       );
     }
+    this.registry = new SpeciesRegistry(baseSeed);
+    this.registry.refresh(this.allCreatures(), 0);
+    this.sampleHistory();
   }
 
   getConfig(): Readonly<SimulationConfig> {
@@ -51,6 +68,49 @@ export class EvolutionSimulation {
     if (regionId >= 0 && regionId < this.config.regionCount) this.activeRegionId = regionId;
   }
 
+  /** Every species ever recorded (living and extinct), for the phylogeny. */
+  getSpecies(): readonly SpeciesRecord[] {
+    return this.registry.all();
+  }
+
+  getSpeciesById(id: number): SpeciesRecord | undefined {
+    return this.registry.get(id);
+  }
+
+  /** Recorded world history, oldest first. */
+  getHistory(): readonly HistorySample[] {
+    return this.history;
+  }
+
+  private allCreatures(): Creature[] {
+    const out: Creature[] = [];
+    for (const eco of this.ecosystems) {
+      for (const c of eco.creaturesRef()) out.push(c);
+    }
+    return out;
+  }
+
+  private sampleHistory(): void {
+    const populations = new Map<number, number>();
+    let total = 0;
+    for (const eco of this.ecosystems) {
+      for (const c of eco.creaturesRef()) {
+        total++;
+        populations.set(c.speciesId, (populations.get(c.speciesId) ?? 0) + 1);
+      }
+    }
+    this.history.push({
+      t: this.simTime,
+      totalPopulation: total,
+      populations: [...populations.entries()],
+    });
+    if (this.history.length > HISTORY_CAPACITY) {
+      // Keep the whole timeline: halve resolution instead of forgetting the past.
+      this.history = this.history.filter((_, i) => i % 2 === 0);
+      this.historyInterval *= 2;
+    }
+  }
+
   getView(): ReadonlySimulationView {
     const regions: RegionState[] = new Array(this.config.regionCount);
     let total = 0;
@@ -69,9 +129,11 @@ export class EvolutionSimulation {
 
     const summary = {
       tick: this.tick,
+      simTime: this.simTime,
       totalBiomass: total,
       meanDiversity: this.config.regionCount ? divSum / this.config.regionCount : 0,
       totalPopulation: pop,
+      livingSpecies: this.registry.livingCount(),
     };
 
     const activeEco =
@@ -111,6 +173,16 @@ export class EvolutionSimulation {
     for (let s = 0; s < steps; s++) {
       for (let i = 0; i < this.ecosystems.length; i++) this.ecosystems[i]!.step(h);
     }
+    this.simTime += simSeconds;
     this.tick += 1;
+
+    if (this.simTime - this.lastRegistryRefresh >= REGISTRY_REFRESH_INTERVAL) {
+      this.registry.refresh(this.allCreatures(), this.simTime);
+      this.lastRegistryRefresh = this.simTime;
+    }
+    if (this.simTime - this.lastHistorySample >= this.historyInterval) {
+      this.sampleHistory();
+      this.lastHistorySample = this.simTime;
+    }
   }
 }

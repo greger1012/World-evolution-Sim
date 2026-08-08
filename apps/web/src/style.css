@@ -100,14 +100,14 @@ main {
   flex: 1;
   display: grid;
   grid-template-columns: 1fr;
-  grid-template-rows: minmax(240px, 52vh) 1fr;
+  grid-template-rows: minmax(240px, 42vh) minmax(240px, 42vh) minmax(200px, 32vh) minmax(200px, 32vh);
   gap: 0;
 }
 
 @media (min-width: 900px) {
   main {
     grid-template-columns: 1fr 1fr;
-    grid-template-rows: 1fr;
+    grid-template-rows: minmax(0, 3fr) minmax(0, 2fr);
   }
 }
 
@@ -121,11 +121,10 @@ main {
 
 @media (min-width: 900px) {
   .panel {
-    border-bottom: none;
     border-right: 1px solid var(--border);
   }
 
-  .panel:last-child {
+  .panel:nth-child(2n) {
     border-right: none;
   }
 }
