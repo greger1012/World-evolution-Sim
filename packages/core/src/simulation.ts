@@ -1,6 +1,6 @@
 import { RegionEcosystem } from "./creatures.js";
 import type { Creature } from "./creatures.js";
-import { regionRichness, regionSeed } from "./globe.js";
+import { biomeName, regionRichness, regionSeed, regionTemperature } from "./globe.js";
 import { SpeciesRegistry } from "./species.js";
 import type {
   HistorySample,
@@ -31,14 +31,18 @@ export class EvolutionSimulation {
   constructor(config: SimulationConfig, baseSeed = 1337) {
     this.config = config;
     this.ecosystems = [];
+    let idCounter = 1;
+    const idAlloc = () => idCounter++;
     for (let i = 0; i < config.regionCount; i++) {
       this.ecosystems.push(
         new RegionEcosystem({
           size: config.patchSize,
           richness: regionRichness(i, config.regionCount),
+          temperature: regionTemperature(i, config.regionCount),
           seed: regionSeed(baseSeed, i),
           initialCreatures: config.initialCreatures,
           maxCreatures: config.maxCreatures,
+          idAlloc,
         }),
       );
     }
@@ -121,7 +125,15 @@ export class EvolutionSimulation {
       const biomass = eco.biomass();
       const diversity = eco.diversity();
       const population = eco.population;
-      regions[i] = { id: i, biomass, diversity, population, carnivores: eco.carnivoreCount };
+      regions[i] = {
+        id: i,
+        biomass,
+        diversity,
+        population,
+        carnivores: eco.carnivoreCount,
+        temperature: eco.temperature,
+        biome: biomeName(eco.temperature, eco.richness),
+      };
       total += biomass;
       divSum += diversity;
       pop += population;
@@ -170,8 +182,17 @@ export class EvolutionSimulation {
     if (steps < 1) steps = 1;
     const h = simSeconds / steps;
 
+    const n = this.ecosystems.length;
     for (let s = 0; s < steps; s++) {
-      for (let i = 0; i < this.ecosystems.length; i++) this.ecosystems[i]!.step(h);
+      for (let i = 0; i < n; i++) this.ecosystems[i]!.step(h);
+      // Route border-crossers to the neighbouring region (ring topology).
+      for (let i = 0; i < n; i++) {
+        const out = this.ecosystems[i]!.takeEmigrants();
+        for (const e of out) {
+          const dest = (i + e.direction + n) % n;
+          this.ecosystems[dest]!.receiveMigrant(e);
+        }
+      }
     }
     this.simTime += simSeconds;
     this.tick += 1;
