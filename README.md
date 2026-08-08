@@ -72,7 +72,9 @@ Or use the workspace scripts in `package.json` to run web and Electron together.
 4. **Click a region** on the globe to open its **living arena**: creatures ("blobs") with heritable traits (size, speed, sense, diet) graze plants, flee or hunt each other, breed, and die. Herbivores carry a soft ring; **predators carry a bold red ring**.
 5. **Trait trade-offs** mirror the real world: bigger bodies are slower but take down bigger prey and win defensive struggles (failed attacks injure the attacker); a higher speed gene burns disproportionately more energy; sharper senses cost upkeep.
 6. **Reproduction**: creatures mature, then well-fed adults court compatible partners (same trophic type, similar lineage colour) and produce litters via genome crossover + mutation — with a costly asexual fallback for lonely creatures. Lineage-colour compatibility gives soft speciation.
-7. **Click a blob** to select it and read its individual stats (diet, health, energy, size, speed + effective speed, sense, age, generation, mating status); the selected blob shows a health bar. Return to the globe with the Globe control.
+7. **Click a blob** to select it and read its individual stats (species, diet, health, energy, size, speed + effective speed, sense, age, generation, mating status); the selected blob shows a health bar. Return to the globe with the Globe control.
+8. **Population history** charts world population over time, one coloured line per species, so booms, crashes, and takeovers are visible at a glance.
+9. **Phylogeny** shows every significant species as a lifespan bar (founding → extinction), colour-coded by lineage, with connectors to the parent species it split from. Carnivorous lineages carry a red dot. Species get procedural names (herbivores like *Ryntaella*, carnivores like *Vilodon*).
 
 ## Scripts
 
@@ -93,6 +95,8 @@ Or use the workspace scripts in `package.json` to run web and Electron together.
 | Trait trade-offs (size ↔ speed ↔ energy) | Working prototype |
 | Reproduction (maturity, mating, crossover, litters) | Working prototype |
 | Per-creature inspection (click a blob) | Working prototype |
+| Species tracking, naming & phylogeny | Working prototype |
+| Population history charts | Working prototype |
 | Detailed environments & biomes (WorldBox-style world map) | Planned |
 | Cross-region migration & species spread | Planned |
 
