@@ -7,16 +7,29 @@ import type {
   Genome,
 } from "./types.js";
 
-/** Small deterministic PRNG (mulberry32) so runs are reproducible/testable. */
-export function makeRng(seed: number): () => number {
+/** Deterministic PRNG with readable/settable state, for reproducible runs
+ * and exact save/load resume. */
+export type Rng = {
+  (): number;
+  getState(): number;
+  setState(state: number): void;
+};
+
+/** Small deterministic PRNG (mulberry32). */
+export function makeRng(seed: number): Rng {
   let a = seed >>> 0;
-  return function rng(): number {
+  const rng = function rng(): number {
     a |= 0;
     a = (a + 0x6d2b79f5) | 0;
     let t = Math.imul(a ^ (a >>> 15), 1 | a);
     t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  } as Rng;
+  rng.getState = () => a >>> 0;
+  rng.setState = (state: number) => {
+    a = state >>> 0;
   };
+  return rng;
 }
 
 /** Standard-normal sample via Box–Muller. */
@@ -162,6 +175,17 @@ export type Creature = {
 /** A creature leaving a region: direction is -1 (left/previous) or +1 (right/next). */
 export type Emigrant = { creature: Creature; direction: -1 | 1 };
 
+/** JSON-safe snapshot of one region's full mutable state. */
+export type EcosystemState = {
+  rng: number;
+  foodPurgeCountdown: number;
+  generation: number;
+  births: number;
+  deaths: number;
+  creatures: Creature[];
+  food: { x: number; y: number }[];
+};
+
 type Food = { x: number; y: number; dead: boolean };
 
 /** Grid cell size; interaction radii up to `sense` span a couple of cells. */
@@ -264,7 +288,7 @@ export class RegionEcosystem {
   readonly size: number;
   readonly richness: number;
   readonly temperature: number;
-  private readonly rng: () => number;
+  private readonly rng: Rng;
   private readonly maxCreatures: number;
   private readonly nextId: () => number;
   private creatures: Creature[] = [];
@@ -376,6 +400,32 @@ export class RegionEcosystem {
   /** Live internal creature refs, for the species registry. Do not mutate. */
   creaturesRef(): readonly Creature[] {
     return this.creatures;
+  }
+
+  /** Deep snapshot of all mutable state, for save/load. */
+  serializeState(): EcosystemState {
+    return {
+      rng: this.rng.getState(),
+      foodPurgeCountdown: this.foodPurgeCountdown,
+      generation: this.generation,
+      births: this.births,
+      deaths: this.deaths,
+      creatures: this.creatures.map((c) => ({ ...c, genome: { ...c.genome } })),
+      food: this.food.filter((f) => !f.dead).map((f) => ({ x: f.x, y: f.y })),
+    };
+  }
+
+  /** Restore a snapshot taken by serializeState (exact-resume fidelity). */
+  restoreState(s: EcosystemState): void {
+    this.rng.setState(s.rng);
+    this.foodPurgeCountdown = s.foodPurgeCountdown;
+    this.generation = s.generation;
+    this.births = s.births;
+    this.deaths = s.deaths;
+    this.creatures = s.creatures.map((c) => ({ ...c, genome: { ...c.genome } }));
+    this.food = s.food.map((f) => ({ x: f.x, y: f.y, dead: false }));
+    this.emigrants = [];
+    this.foodGrid.rebuild(this.food);
   }
 
   step(dt: number): void {

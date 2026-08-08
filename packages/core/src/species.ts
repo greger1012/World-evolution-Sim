@@ -1,6 +1,13 @@
 import { isPredator, makeRng } from "./creatures.js";
-import type { Creature } from "./creatures.js";
+import type { Creature, Rng } from "./creatures.js";
 import type { SpeciesRecord } from "./types.js";
+
+/** JSON-safe snapshot of the registry, for save/load. */
+export type SpeciesRegistryState = {
+  rng: number;
+  nextId: number;
+  records: SpeciesRecord[];
+};
 
 // Hue-gap clustering: members of one species whose lineage colours drift apart
 // by more than this (with nothing in between) are considered reproductively
@@ -49,7 +56,7 @@ function circularMeanHue(hues: number[]): number {
  */
 export class SpeciesRegistry {
   private readonly records = new Map<number, SpeciesRecord>();
-  private readonly rng: () => number;
+  private readonly rng: Rng;
   private nextId = 1;
 
   constructor(seed: number) {
@@ -69,6 +76,23 @@ export class SpeciesRegistry {
     let n = 0;
     for (const r of this.records.values()) if (r.extinctAt === null) n++;
     return n;
+  }
+
+  /** Deep snapshot of all mutable state, for save/load. */
+  serializeState(): SpeciesRegistryState {
+    return {
+      rng: this.rng.getState(),
+      nextId: this.nextId,
+      records: [...this.records.values()].map((r) => ({ ...r })),
+    };
+  }
+
+  /** Restore a snapshot taken by serializeState. */
+  restoreState(s: SpeciesRegistryState): void {
+    this.rng.setState(s.rng);
+    this.nextId = s.nextId;
+    this.records.clear();
+    for (const r of s.records) this.records.set(r.id, { ...r });
   }
 
   private makeName(trophic: "herbivore" | "carnivore"): string {

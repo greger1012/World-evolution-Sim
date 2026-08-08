@@ -1,7 +1,8 @@
 import { RegionEcosystem } from "./creatures.js";
-import type { Creature } from "./creatures.js";
+import type { Creature, EcosystemState } from "./creatures.js";
 import { biomeName, regionRichness, regionSeed, regionTemperature } from "./globe.js";
 import { SpeciesRegistry } from "./species.js";
+import type { SpeciesRegistryState } from "./species.js";
 import type {
   HistorySample,
   ReadonlySimulationView,
@@ -11,14 +12,34 @@ import type {
   TimeControls,
 } from "./types.js";
 
+/** JSON-safe snapshot of an entire world, for save/load. */
+export type SavedWorld = {
+  version: 1;
+  seed: number;
+  config: SimulationConfig;
+  idCounter: number;
+  tick: number;
+  simTime: number;
+  lastRegistryRefresh: number;
+  historyInterval: number;
+  lastHistorySample: number;
+  activeRegionId: number | null;
+  time: TimeControls;
+  history: HistorySample[];
+  ecosystems: EcosystemState[];
+  species: SpeciesRegistryState;
+};
+
 const REGISTRY_REFRESH_INTERVAL = 1; // sim-seconds between species refreshes
 const HISTORY_SAMPLE_INTERVAL = 2; // sim-seconds between history samples
 const HISTORY_CAPACITY = 512; // samples kept; interval doubles when full
 
 export class EvolutionSimulation {
   private readonly config: SimulationConfig;
+  private readonly baseSeed: number;
   private readonly ecosystems: RegionEcosystem[];
   private readonly registry: SpeciesRegistry;
+  private idCounter = 1;
   private tick = 0;
   private simTime = 0;
   private lastRegistryRefresh = 0;
@@ -30,9 +51,9 @@ export class EvolutionSimulation {
 
   constructor(config: SimulationConfig, baseSeed = 1337) {
     this.config = config;
+    this.baseSeed = baseSeed;
     this.ecosystems = [];
-    let idCounter = 1;
-    const idAlloc = () => idCounter++;
+    const idAlloc = () => this.idCounter++;
     for (let i = 0; i < config.regionCount; i++) {
       this.ecosystems.push(
         new RegionEcosystem({
@@ -84,6 +105,54 @@ export class EvolutionSimulation {
   /** Recorded world history, oldest first. */
   getHistory(): readonly HistorySample[] {
     return this.history;
+  }
+
+  /** Deep, JSON-safe snapshot of the whole world. */
+  serialize(): SavedWorld {
+    return {
+      version: 1,
+      seed: this.baseSeed,
+      config: { ...this.config },
+      idCounter: this.idCounter,
+      tick: this.tick,
+      simTime: this.simTime,
+      lastRegistryRefresh: this.lastRegistryRefresh,
+      historyInterval: this.historyInterval,
+      lastHistorySample: this.lastHistorySample,
+      activeRegionId: this.activeRegionId,
+      time: { ...this.time },
+      history: this.history.map((h) => ({
+        t: h.t,
+        totalPopulation: h.totalPopulation,
+        populations: h.populations.map(([id, p]) => [id, p] as [number, number]),
+      })),
+      ecosystems: this.ecosystems.map((e) => e.serializeState()),
+      species: this.registry.serializeState(),
+    };
+  }
+
+  /** Rebuild a world from a serialize() snapshot with exact-resume fidelity. */
+  static restore(saved: SavedWorld): EvolutionSimulation {
+    if (saved.version !== 1) throw new Error(`Unsupported save version: ${saved.version}`);
+    const sim = new EvolutionSimulation({ ...saved.config }, saved.seed);
+    sim.idCounter = saved.idCounter;
+    sim.tick = saved.tick;
+    sim.simTime = saved.simTime;
+    sim.lastRegistryRefresh = saved.lastRegistryRefresh;
+    sim.historyInterval = saved.historyInterval;
+    sim.lastHistorySample = saved.lastHistorySample;
+    sim.activeRegionId = saved.activeRegionId;
+    sim.time = { ...saved.time };
+    sim.history = saved.history.map((h) => ({
+      t: h.t,
+      totalPopulation: h.totalPopulation,
+      populations: h.populations.map(([id, p]) => [id, p] as [number, number]),
+    }));
+    for (let i = 0; i < sim.ecosystems.length; i++) {
+      sim.ecosystems[i]!.restoreState(saved.ecosystems[i]!);
+    }
+    sim.registry.restoreState(saved.species);
+    return sim;
   }
 
   private allCreatures(): Creature[] {

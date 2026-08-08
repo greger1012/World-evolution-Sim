@@ -1,6 +1,8 @@
 export { defaultSimulationConfig, speedPresets } from "./config.js";
 export { EvolutionSimulation } from "./simulation.js";
+export type { SavedWorld } from "./simulation.js";
 export { RegionEcosystem, isPredator, makeRng } from "./creatures.js";
+export type { Rng } from "./creatures.js";
 export { SpeciesRegistry } from "./species.js";
 export {
   biomeName,
