@@ -46,6 +46,10 @@ export type RegionState = {
   population: number;
   /** Live predator count (diet >= 0.5) in the region. */
   carnivores: number;
+  /** Climate: 0 = frozen, 1 = scorching. */
+  temperature: number;
+  /** Human-readable biome (from temperature + richness). */
+  biome: string;
 };
 
 export type TimeControls = {
@@ -127,6 +131,8 @@ export type FoodView = {
 /** Aggregate genome/population stats for the active arena. */
 export type ArenaStats = {
   population: number;
+  /** Distinct species present in the region. */
+  speciesCount: number;
   generation: number;
   meanSize: number;
   meanSpeed: number;

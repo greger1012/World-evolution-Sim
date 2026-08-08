@@ -242,6 +242,18 @@ function drawGlobe(): void {
   ctx.arc(cx, cy, R, 0, Math.PI * 2);
   ctx.stroke();
 
+  // Climate ring: each region's temperature, frozen blue to scorching red.
+  for (let i = 0; i < n; i++) {
+    const reg = view.regions[i]!;
+    const a0 = (i / n) * Math.PI * 2 - Math.PI / 2;
+    const a1 = ((i + 1) / n) * Math.PI * 2 - Math.PI / 2;
+    ctx.strokeStyle = `hsl(${220 - 210 * reg.temperature} 75% 55% / 0.85)`;
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.arc(cx, cy, R + 5, a0 + 0.01, a1 - 0.01);
+    ctx.stroke();
+  }
+
   // Summary readout.
   ctx.fillStyle = "#cdd7e6";
   ctx.textAlign = "center";
@@ -384,11 +396,11 @@ function drawArenaOverlay(
   // Compact population summary line.
   if (stats) {
     ctx.fillStyle = "rgba(10,14,20,0.55)";
-    ctx.fillRect(ox + 6, oy + 6, 214, 20);
+    ctx.fillRect(ox + 6, oy + 6, 262, 20);
     ctx.fillStyle = "#e8ecf4";
     const carn = (stats.carnivoreFraction * 100).toFixed(0);
     ctx.fillText(
-      `pop ${stats.population} · gen ${stats.generation} · carnivores ${carn}%`,
+      `pop ${stats.population} · species ${stats.speciesCount} · gen ${stats.generation} · carniv. ${carn}%`,
       ox + 12,
       oy + 20,
     );
@@ -658,7 +670,9 @@ globeCanvas.addEventListener("click", (e) => {
   selectedCreatureId = null;
   globeBtn.disabled = false;
   globeBtn.classList.remove("active");
-  patchHint.textContent = `Region ${id} — click a blob to inspect it`;
+  const reg = sim.getView().regions[id];
+  const climate = reg ? ` · ${reg.biome} (${reg.temperature < 0.3 ? "cold" : reg.temperature > 0.65 ? "hot" : "mild"})` : "";
+  patchHint.textContent = `Region ${id}${climate} — click a blob to inspect it`;
 });
 
 patchCanvas.addEventListener("click", (e) => {

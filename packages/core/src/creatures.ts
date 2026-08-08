@@ -1,3 +1,4 @@
+import { climateFoodFactor } from "./globe.js";
 import type {
   ArenaStats,
   CreatureView,
@@ -99,8 +100,22 @@ const MEAT_ENERGY_K = 0.92; // energy per unit of prey body size
 const MEAT_ENERGY_CAP = 1.5;
 
 const FOOD_RADIUS = 0.35;
-const FOOD_BASE_CAPACITY = 135; // * richness -> per-region plant carrying capacity
+const FOOD_BASE_CAPACITY = 135; // * richness * climate -> plant carrying capacity
 const FOOD_REGROW = 1.0; // regrowth rate toward capacity (per sec)
+
+// Climate stress (Bergmann's rule): cold punishes small bodies (poor
+// surface-to-volume ratio), heat punishes large ones — so different regions
+// select for different sizes.
+const COLD_THRESHOLD = 0.45;
+const HEAT_THRESHOLD = 0.62;
+const COLD_STRESS = 0.18; // energy/sec * coldness / size
+const HEAT_STRESS = 0.06; // energy/sec * heat * size
+
+// Migration: a region's left/right edges connect to its neighbours. Crossing
+// is chancy (think mountain passes) and costs energy, so gene flow is real
+// but regional ecologies stay distinct.
+const MIGRATION_CHANCE = 0.07;
+const MIGRATION_COST = 0.06;
 
 export type Creature = {
   id: number;
@@ -115,11 +130,16 @@ export type Creature = {
   generation: number;
   genome: Genome;
   dead: boolean;
+  /** Set when the creature crossed a border this step (leaves, not dies). */
+  migrated: boolean;
   /** Time until this creature may breed again. */
   matingCd: number;
   /** Time until a predator may strike again. */
   attackCd: number;
 };
+
+/** A creature leaving a region: direction is -1 (left/previous) or +1 (right/next). */
+export type Emigrant = { creature: Creature; direction: -1 | 1 };
 
 type Food = { x: number; y: number };
 
@@ -200,26 +220,33 @@ function crossover(a: Genome, b: Genome, rng: () => number): Genome {
 export class RegionEcosystem {
   readonly size: number;
   readonly richness: number;
+  readonly temperature: number;
   private readonly rng: () => number;
   private readonly maxCreatures: number;
+  private readonly nextId: () => number;
   private creatures: Creature[] = [];
   private food: Food[] = [];
+  private emigrants: Emigrant[] = [];
   private generation = 0;
   private births = 0;
   private deaths = 0;
-  private nextId = 1;
 
   constructor(opts: {
     size: number;
     richness: number;
+    temperature: number;
     seed: number;
     initialCreatures: number;
     maxCreatures: number;
+    /** Shared id allocator so ids stay unique across regions (migration). */
+    idAlloc: () => number;
   }) {
     this.size = opts.size;
     this.richness = opts.richness;
+    this.temperature = opts.temperature;
     this.rng = makeRng(opts.seed);
     this.maxCreatures = opts.maxCreatures;
+    this.nextId = opts.idAlloc;
 
     const capacity = this.foodCapacity();
     const startFood = Math.floor(capacity * 0.85);
@@ -239,7 +266,7 @@ export class RegionEcosystem {
     y?: number,
   ): Creature {
     return {
-      id: this.nextId++,
+      id: this.nextId(),
       speciesId,
       x: x ?? this.rng() * this.size,
       y: y ?? this.rng() * this.size,
@@ -250,13 +277,35 @@ export class RegionEcosystem {
       generation,
       genome,
       dead: false,
+      migrated: false,
       matingCd: 1.5,
       attackCd: 0,
     };
   }
 
   private foodCapacity(): number {
-    return Math.max(6, Math.floor(FOOD_BASE_CAPACITY * this.richness));
+    return Math.max(
+      6,
+      Math.floor(FOOD_BASE_CAPACITY * this.richness * climateFoodFactor(this.temperature)),
+    );
+  }
+
+  /** Creatures that crossed a border this step; caller routes them onward. */
+  takeEmigrants(): Emigrant[] {
+    if (this.emigrants.length === 0) return this.emigrants;
+    const out = this.emigrants;
+    this.emigrants = [];
+    return out;
+  }
+
+  /** Accept a creature arriving from a neighbouring region. */
+  receiveMigrant(e: Emigrant): void {
+    const c = e.creature;
+    c.migrated = false;
+    // Entering from the side opposite to its travel direction.
+    c.x = e.direction === 1 ? 0.5 : this.size - 0.5;
+    c.y = clamp(c.y, 0, this.size);
+    this.creatures.push(c);
   }
 
   private randomPoint(): Food {
@@ -290,15 +339,21 @@ export class RegionEcosystem {
 
       this.senseAndSteer(c, list, dt);
       this.move(c, dt);
+      if (c.migrated) continue; // left for a neighbouring region
 
       const g = c.genome;
       const pred = isPredator(g);
       const moveCost =
         MOVE_COST * g.size * g.size * g.speed * g.speed *
         (pred ? PREDATOR_MOVE_DISCOUNT : 1);
+      const cold = Math.max(0, COLD_THRESHOLD - this.temperature);
+      const heat = Math.max(0, this.temperature - HEAT_THRESHOLD);
+      const climateStress =
+        (COLD_STRESS * cold) / g.size + HEAT_STRESS * heat * g.size;
       const cost =
         BASE_METABOLISM +
         moveCost +
+        climateStress +
         SENSE_COST * g.sense * g.sense +
         (pred ? PREDATOR_UPKEEP : 0);
       c.energy -= cost * dt;
@@ -341,7 +396,7 @@ export class RegionEcosystem {
     }
 
     const survivors: Creature[] = [];
-    for (const c of list) if (!c.dead) survivors.push(c);
+    for (const c of list) if (!c.dead && !c.migrated) survivors.push(c);
     for (const n of newborns) survivors.push(n);
     this.creatures = survivors;
 
@@ -545,11 +600,19 @@ export class RegionEcosystem {
     const v = effectiveSpeed(c.genome) * MOVE_SPEED * sprint;
     c.x += Math.cos(c.heading) * v * dt;
     c.y += Math.sin(c.heading) * v * dt;
-    if (c.x < 0) {
-      c.x = -c.x;
-      c.heading = Math.PI - c.heading;
-    } else if (c.x > this.size) {
-      c.x = 2 * this.size - c.x;
+
+    // Left/right edges border the neighbouring regions: crossing sometimes
+    // succeeds (and costs energy), otherwise the border turns the creature back.
+    if (c.x < 0 || c.x > this.size) {
+      const direction: -1 | 1 = c.x < 0 ? -1 : 1;
+      if (this.rng() < MIGRATION_CHANCE && c.energy > MIGRATION_COST) {
+        c.energy -= MIGRATION_COST;
+        c.migrated = true;
+        c.x = clamp(c.x, 0, this.size);
+        this.emigrants.push({ creature: c, direction });
+        return;
+      }
+      c.x = direction === -1 ? -c.x : 2 * this.size - c.x;
       c.heading = Math.PI - c.heading;
     }
     if (c.y < 0) {
@@ -671,6 +734,7 @@ export class RegionEcosystem {
     if (n === 0) {
       return {
         population: 0,
+        speciesCount: 0,
         generation: this.generation,
         meanSize: 0,
         meanSpeed: 0,
@@ -686,15 +750,18 @@ export class RegionEcosystem {
     let se = 0;
     let hp = 0;
     let carn = 0;
+    const speciesSeen = new Set<number>();
     for (const c of this.creatures) {
       s += c.genome.size;
       sp += c.genome.speed;
       se += c.genome.sense;
       hp += c.health;
+      speciesSeen.add(c.speciesId);
       if (isPredator(c.genome)) carn++;
     }
     return {
       population: n,
+      speciesCount: speciesSeen.size,
       generation: this.generation,
       meanSize: s / n,
       meanSpeed: sp / n,
