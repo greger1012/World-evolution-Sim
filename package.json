@@ -8,7 +8,8 @@
   "scripts": {
     "build": "npm run build -w @evo-world-sim/core && npm run build -w @evo-world-sim/web",
     "dev": "npm run dev -w @evo-world-sim/web",
-    "dev:desktop": "concurrently -k \"npm run dev -w @evo-world-sim/web\" \"wait-on http://127.0.0.1:5173 && npm run dev -w @evo-world-sim/desktop\""
+    "dev:desktop": "concurrently -k \"npm run dev -w @evo-world-sim/web\" \"wait-on http://127.0.0.1:5173 && npm run dev -w @evo-world-sim/desktop\"",
+    "test": "npm run test -w @evo-world-sim/core"
   },
   "devDependencies": {
     "concurrently": "^9.1.2",
