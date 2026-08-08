@@ -14,6 +14,8 @@ export type RegionState = {
   diversity: number;
   /** Live creature count in the region. */
   population: number;
+  /** Live predator count (diet >= 0.5) in the region. */
+  carnivores: number;
 };
 
 export type TimeControls = {

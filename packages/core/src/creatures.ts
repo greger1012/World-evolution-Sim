@@ -257,6 +257,12 @@ export class RegionEcosystem {
     return this.creatures.length;
   }
 
+  get carnivoreCount(): number {
+    let n = 0;
+    for (const c of this.creatures) if (isPredator(c.genome)) n++;
+    return n;
+  }
+
   step(dt: number): void {
     if (dt <= 0) return;
     this.growFood(dt);

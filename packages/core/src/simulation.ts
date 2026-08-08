@@ -61,7 +61,7 @@ export class EvolutionSimulation {
       const biomass = eco.biomass();
       const diversity = eco.diversity();
       const population = eco.population;
-      regions[i] = { id: i, biomass, diversity, population };
+      regions[i] = { id: i, biomass, diversity, population, carnivores: eco.carnivoreCount };
       total += biomass;
       divSum += diversity;
       pop += population;
