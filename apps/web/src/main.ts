@@ -1,14 +1,74 @@
 import "./style.css";
-import {
-  defaultSimulationConfig,
-  EvolutionSimulation,
-  speedPresets,
+import { speedPresets } from "@evo-world-sim/core";
+import type {
+  ArenaStats,
+  HistorySample,
+  ReadonlySimulationView,
+  SavedWorld,
+  SpeciesRecord,
 } from "@evo-world-sim/core";
-import type { ArenaStats } from "@evo-world-sim/core";
+import type { MainToWorker, WorkerToMain } from "./protocol.js";
 
-const sim = new EvolutionSimulation({ ...defaultSimulationConfig });
-const cfg = sim.getConfig();
+const SAVE_KEY = "evo-world-sim-save-v1";
 
+// ---------------------------------------------------------------------------
+// Simulation worker: the sim runs off the main thread; we render snapshots.
+// ---------------------------------------------------------------------------
+const worker = new Worker(new URL("./sim.worker.ts", import.meta.url), {
+  type: "module",
+});
+
+function send(msg: MainToWorker): void {
+  worker.postMessage(msg);
+}
+
+let view: ReadonlySimulationView | null = null;
+let speciesList: SpeciesRecord[] = [];
+let speciesById = new Map<number, SpeciesRecord>();
+let historySamples: HistorySample[] = [];
+
+worker.onmessage = (e: MessageEvent<WorkerToMain>) => {
+  const msg = e.data;
+  switch (msg.type) {
+    case "frame":
+      view = msg.view;
+      break;
+    case "meta":
+      speciesList = msg.species;
+      speciesById = new Map(msg.species.map((s) => [s.id, s]));
+      historySamples = msg.history;
+      break;
+    case "saved":
+      try {
+        localStorage.setItem(SAVE_KEY, JSON.stringify(msg.data));
+        if (msg.reason === "manual") flashButton(saveBtn, "Saved ✓");
+      } catch {
+        if (msg.reason === "manual") flashButton(saveBtn, "Save failed");
+      }
+      break;
+    case "loadFailed":
+      localStorage.removeItem(SAVE_KEY);
+      break;
+  }
+};
+
+function loadSavedWorld(): SavedWorld | null {
+  try {
+    const raw = localStorage.getItem(SAVE_KEY);
+    return raw ? (JSON.parse(raw) as SavedWorld) : null;
+  } catch {
+    return null;
+  }
+}
+
+send({ type: "init", seed: 1337, saved: loadSavedWorld() });
+
+// Autosave: the world quietly persists so a refresh never loses it.
+setInterval(() => send({ type: "save", reason: "auto" }), 30_000);
+
+// ---------------------------------------------------------------------------
+// UI scaffolding
+// ---------------------------------------------------------------------------
 const app = document.querySelector<HTMLDivElement>("#app")!;
 app.innerHTML = `
   <header>
@@ -20,6 +80,8 @@ app.innerHTML = `
       </label>
       <button type="button" id="pause">Pause</button>
       <button type="button" id="globe" class="active" disabled>Globe</button>
+      <button type="button" id="save" title="Save this world in the browser">Save</button>
+      <button type="button" id="new" title="Start a fresh world">New world</button>
     </div>
   </header>
   <main>
@@ -58,6 +120,8 @@ const statsEl = document.querySelector<HTMLDivElement>("#stats")!;
 const speedSel = document.querySelector<HTMLSelectElement>("#speed")!;
 const pauseBtn = document.querySelector<HTMLButtonElement>("#pause")!;
 const globeBtn = document.querySelector<HTMLButtonElement>("#globe")!;
+const saveBtn = document.querySelector<HTMLButtonElement>("#save")!;
+const newBtn = document.querySelector<HTMLButtonElement>("#new")!;
 const patchHint = document.querySelector<HTMLParagraphElement>("#patch-hint")!;
 const globeCanvas = document.querySelector<HTMLCanvasElement>("#globe-canvas")!;
 const patchCanvas = document.querySelector<HTMLCanvasElement>("#patch-canvas")!;
@@ -74,23 +138,37 @@ speedSel.value = "1";
 
 let selectedCreatureId: number | null = null;
 
+function flashButton(btn: HTMLButtonElement, text: string): void {
+  const original = btn.textContent;
+  btn.textContent = text;
+  setTimeout(() => {
+    btn.textContent = original;
+  }, 1200);
+}
+
 speedSel.addEventListener("change", () => {
-  sim.setSpeedMultiplier(Number(speedSel.value));
+  send({ type: "setSpeed", value: Number(speedSel.value) });
 });
 
 pauseBtn.addEventListener("click", () => {
-  const view = sim.getView();
-  const next = !view.time.paused;
-  sim.setPaused(next);
-  pauseBtn.textContent = next ? "Resume" : "Pause";
+  send({ type: "setPaused", value: !(view?.time.paused ?? false) });
 });
 
 globeBtn.addEventListener("click", () => {
-  sim.setActiveRegion(null);
+  send({ type: "setActiveRegion", value: null });
   selectedCreatureId = null;
-  globeBtn.disabled = true;
-  globeBtn.classList.add("active");
   patchHint.textContent = "Globe view — select a region to watch its creatures evolve.";
+});
+
+saveBtn.addEventListener("click", () => {
+  send({ type: "save", reason: "manual" });
+});
+
+newBtn.addEventListener("click", () => {
+  localStorage.removeItem(SAVE_KEY);
+  selectedCreatureId = null;
+  send({ type: "newWorld", seed: (Date.now() ^ (Math.random() * 0x7fffffff)) >>> 0 });
+  flashButton(newBtn, "New world ✓");
 });
 
 function resizeCanvas(canvas: HTMLCanvasElement, wrap: HTMLElement): void {
@@ -118,8 +196,9 @@ const ro = new ResizeObserver(() => {
 });
 for (const [, wrap] of observedCanvases) ro.observe(wrap);
 
-let last = performance.now();
-
+// ---------------------------------------------------------------------------
+// Rendering
+// ---------------------------------------------------------------------------
 function biomassColor(t: number): string {
   const x = Math.min(1, Math.max(0, t));
   const h = 205 - 150 * x; // blue (barren) -> green (lush)
@@ -139,14 +218,13 @@ function globeGeometry(w: number, h: number): { cx: number; cy: number; R: numbe
   return { cx, cy, R };
 }
 
-function drawGlobe(): void {
+function drawGlobe(v: ReadonlySimulationView): void {
   const ctx = globeCanvas.getContext("2d");
   if (!ctx) return;
   const { w, h } = logicalCanvasSize(globeCanvas);
   ctx.clearRect(0, 0, w, h);
-  const view = sim.getView();
   const { cx, cy, R } = globeGeometry(w, h);
-  const n = view.regions.length;
+  const n = v.regions.length;
 
   // Atmospheric halo behind the planet.
   const halo = ctx.createRadialGradient(cx, cy, R * 0.9, cx, cy, R * 1.28);
@@ -165,7 +243,7 @@ function drawGlobe(): void {
   for (let i = 0; i < n; i++) {
     const a0 = (i / n) * Math.PI * 2 - Math.PI / 2;
     const a1 = ((i + 1) / n) * Math.PI * 2 - Math.PI / 2;
-    const reg = view.regions[i]!;
+    const reg = v.regions[i]!;
     ctx.fillStyle = biomassColor(reg.biomass);
     ctx.beginPath();
     ctx.moveTo(cx, cy);
@@ -211,7 +289,7 @@ function drawGlobe(): void {
 
   // Red markers on regions that currently host predators.
   for (let i = 0; i < n; i++) {
-    const reg = view.regions[i]!;
+    const reg = v.regions[i]!;
     if (reg.carnivores <= 0) continue;
     const mid = ((i + 0.5) / n) * Math.PI * 2 - Math.PI / 2;
     const mr = R * 0.82;
@@ -222,8 +300,8 @@ function drawGlobe(): void {
   }
 
   // Highlight the active region wedge.
-  if (view.activeRegionId !== null) {
-    const i = view.activeRegionId;
+  if (v.activeRegionId !== null) {
+    const i = v.activeRegionId;
     const a0 = (i / n) * Math.PI * 2 - Math.PI / 2;
     const a1 = ((i + 1) / n) * Math.PI * 2 - Math.PI / 2;
     ctx.strokeStyle = "#eaf2ff";
@@ -244,7 +322,7 @@ function drawGlobe(): void {
 
   // Climate ring: each region's temperature, frozen blue to scorching red.
   for (let i = 0; i < n; i++) {
-    const reg = view.regions[i]!;
+    const reg = v.regions[i]!;
     const a0 = (i / n) * Math.PI * 2 - Math.PI / 2;
     const a1 = ((i + 1) / n) * Math.PI * 2 - Math.PI / 2;
     ctx.strokeStyle = `hsl(${220 - 210 * reg.temperature} 75% 55% / 0.85)`;
@@ -258,14 +336,10 @@ function drawGlobe(): void {
   ctx.fillStyle = "#cdd7e6";
   ctx.textAlign = "center";
   ctx.font = "600 12px system-ui,sans-serif";
-  ctx.fillText(`${view.summary.totalPopulation} creatures`, cx, cy + R + 22);
+  ctx.fillText(`${v.summary.totalPopulation} creatures`, cx, cy + R + 22);
   ctx.fillStyle = "#8b95a8";
   ctx.font = "11px system-ui,sans-serif";
-  ctx.fillText(
-    `diversity ${view.summary.meanDiversity.toFixed(2)}`,
-    cx,
-    cy + R + 38,
-  );
+  ctx.fillText(`diversity ${v.summary.meanDiversity.toFixed(2)}`, cx, cy + R + 38);
 }
 
 function arenaTransform(
@@ -279,14 +353,13 @@ function arenaTransform(
   return { scale, ox, oy };
 }
 
-function drawArena(): void {
+function drawArena(v: ReadonlySimulationView): void {
   const ctx = patchCanvas.getContext("2d");
   if (!ctx) return;
   const { w, h } = logicalCanvasSize(patchCanvas);
   ctx.clearRect(0, 0, w, h);
-  const view = sim.getView();
-  const creatures = view.activeCreatures;
-  const food = view.activeFood;
+  const creatures = v.activeCreatures;
+  const food = v.activeFood;
   if (!creatures || !food) {
     ctx.fillStyle = "#2a3140";
     ctx.font = "13px system-ui,sans-serif";
@@ -295,7 +368,7 @@ function drawArena(): void {
     return;
   }
 
-  const arenaSize = view.arenaSize;
+  const arenaSize = v.arenaSize;
   const { scale, ox, oy } = arenaTransform(w, h, arenaSize);
 
   // Arena floor.
@@ -365,7 +438,7 @@ function drawArena(): void {
     ctx.fillRect(barX, barY, barW * selected.health, 3);
   }
 
-  drawArenaOverlay(ctx, ox, oy, view.activeStats, selected);
+  drawArenaOverlay(ctx, ox, oy, v.activeStats, selected);
 }
 
 function dietLabel(diet: number): string {
@@ -428,7 +501,7 @@ function drawArenaOverlay(
     : selected.readyToMate
       ? "seeking mate"
       : "recovering";
-  const speciesName = sim.getSpeciesById(selected.speciesId)?.name ?? "unknown";
+  const speciesName = speciesById.get(selected.speciesId)?.name ?? "…";
   const socialLabel =
     selected.diet >= 0.5
       ? `${selected.social.toFixed(2)}${selected.social > 0.4 ? " (pack hunter)" : ""}`
@@ -487,7 +560,7 @@ function drawHistory(): void {
   const { w, h } = logicalCanvasSize(historyCanvas);
   ctx.clearRect(0, 0, w, h);
 
-  const samples = sim.getHistory();
+  const samples = historySamples;
   if (samples.length < 2) {
     ctx.fillStyle = "#2a3140";
     ctx.font = "12px system-ui,sans-serif";
@@ -496,8 +569,7 @@ function drawHistory(): void {
     return;
   }
 
-  const species = sim.getSpecies();
-  const top = species
+  const top = speciesList
     .filter((s) => s.extinctAt === null && s.population > 0)
     .sort((a, b) => b.population - a.population)
     .slice(0, 7);
@@ -585,15 +657,14 @@ function drawHistory(): void {
   }
 }
 
-function drawPhylo(): void {
+function drawPhylo(v: ReadonlySimulationView): void {
   const ctx = phyloCanvas.getContext("2d");
   if (!ctx) return;
   const { w, h } = logicalCanvasSize(phyloCanvas);
   ctx.clearRect(0, 0, w, h);
 
-  const view = sim.getView();
-  const now = Math.max(1e-6, view.summary.simTime);
-  const all = sim.getSpecies();
+  const now = Math.max(1e-6, v.summary.simTime);
+  const all = speciesList;
 
   // Show every living species plus the most significant extinct ones.
   const living = all.filter((s) => s.extinctAt === null);
@@ -665,7 +736,11 @@ function drawPhylo(): void {
   );
 }
 
+// ---------------------------------------------------------------------------
+// Input
+// ---------------------------------------------------------------------------
 function sectorFromGlobeClick(clientX: number, clientY: number): number | null {
+  if (!view) return null;
   const rect = globeCanvas.getBoundingClientRect();
   const x = clientX - rect.left;
   const y = clientY - rect.top;
@@ -676,25 +751,25 @@ function sectorFromGlobeClick(clientX: number, clientY: number): number | null {
   if (dist > R) return null;
   let ang = Math.atan2(dy, dx) + Math.PI / 2;
   if (ang < 0) ang += Math.PI * 2;
-  const n = cfg.regionCount;
+  const n = view.regions.length;
   const idx = Math.floor((ang / (Math.PI * 2)) * n);
   return Math.min(n - 1, Math.max(0, idx));
 }
 
 globeCanvas.addEventListener("click", (e) => {
   const id = sectorFromGlobeClick(e.clientX, e.clientY);
-  if (id === null) return;
-  sim.setActiveRegion(id);
+  if (id === null || !view) return;
+  send({ type: "setActiveRegion", value: id });
   selectedCreatureId = null;
-  globeBtn.disabled = false;
-  globeBtn.classList.remove("active");
-  const reg = sim.getView().regions[id];
-  const climate = reg ? ` · ${reg.biome} (${reg.temperature < 0.3 ? "cold" : reg.temperature > 0.65 ? "hot" : "mild"})` : "";
+  const reg = view.regions[id];
+  const climate = reg
+    ? ` · ${reg.biome} (${reg.temperature < 0.3 ? "cold" : reg.temperature > 0.65 ? "hot" : "mild"})`
+    : "";
   patchHint.textContent = `Region ${id}${climate} — click a blob to inspect it`;
 });
 
 patchCanvas.addEventListener("click", (e) => {
-  const view = sim.getView();
+  if (!view) return;
   const creatures = view.activeCreatures;
   if (!creatures) return;
   const { w, h } = logicalCanvasSize(patchCanvas);
@@ -717,22 +792,30 @@ patchCanvas.addEventListener("click", (e) => {
   selectedCreatureId = picked;
 });
 
-function frame(now: number): void {
-  const dt = now - last;
-  last = now;
-  sim.advance(dt);
-  const view = sim.getView();
-  statsEl.innerHTML = `
-    <span>Tick <strong>${view.summary.tick}</strong></span>
-    <span>Creatures <strong>${view.summary.totalPopulation}</strong></span>
-    <span>Species <strong>${view.summary.livingSpecies}</strong></span>
-    <span>Diversity <strong>${view.summary.meanDiversity.toFixed(3)}</strong></span>
-    <span>Speed <strong>${view.time.speedMultiplier}×</strong>${view.time.paused ? " (paused)" : ""}</span>
-  `;
-  drawGlobe();
-  drawArena();
-  drawHistory();
-  drawPhylo();
+// ---------------------------------------------------------------------------
+// Render loop: draws the latest snapshot from the worker.
+// ---------------------------------------------------------------------------
+function frame(): void {
+  if (view) {
+    statsEl.innerHTML = `
+      <span>Tick <strong>${view.summary.tick}</strong></span>
+      <span>Creatures <strong>${view.summary.totalPopulation}</strong></span>
+      <span>Species <strong>${view.summary.livingSpecies}</strong></span>
+      <span>Diversity <strong>${view.summary.meanDiversity.toFixed(3)}</strong></span>
+      <span>Speed <strong>${view.time.speedMultiplier}×</strong>${view.time.paused ? " (paused)" : ""}</span>
+    `;
+    pauseBtn.textContent = view.time.paused ? "Resume" : "Pause";
+    const onGlobe = view.activeRegionId === null;
+    globeBtn.disabled = onGlobe;
+    globeBtn.classList.toggle("active", onGlobe);
+    if (String(view.time.speedMultiplier) !== speedSel.value) {
+      speedSel.value = String(view.time.speedMultiplier);
+    }
+    drawGlobe(view);
+    drawArena(view);
+    drawHistory();
+    drawPhylo(view);
+  }
   requestAnimationFrame(frame);
 }
 
