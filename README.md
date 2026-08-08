@@ -70,7 +70,7 @@ Or use the workspace scripts in `package.json` to run web and Electron together.
 2. Use the **speed** dropdown to accelerate or slow time (evolution runs faster at higher multipliers).
 3. **Pause / Resume** to freeze the world state.
 4. **Click a region** on the globe to open its **living arena**: creatures ("blobs") with heritable traits (size, speed, sense, diet) graze plants, flee or hunt each other, breed, and die. Herbivores carry a soft ring; **predators carry a bold red ring**.
-5. **Trait trade-offs** mirror the real world: bigger bodies are slower but take down bigger prey and win defensive struggles (failed attacks injure the attacker); a higher speed gene burns disproportionately more energy; sharper senses cost upkeep.
+5. **Trait trade-offs** mirror the real world: bigger bodies are slower but take down bigger prey and win defensive struggles (failed attacks injure the attacker); a higher speed gene burns disproportionately more energy; sharper senses cost upkeep. **Armor** blocks and punishes attacks but is heavy and expensive; a **social** gene makes herbivores herd for safety and carnivores **hunt in packs** — regrouping, striking together for a catch bonus, taking down prey too big for a lone hunter, and sharing every kill; a **fecundity** gene picks an r/K strategy (many weak young vs few sturdy ones from a fixed birth pool).
 6. **Reproduction**: creatures mature, then well-fed adults court compatible partners (same trophic type, similar lineage colour) and produce litters via genome crossover + mutation — with a costly asexual fallback for lonely creatures. Lineage-colour compatibility gives soft speciation.
 7. **Click a blob** to select it and read its individual stats (species, diet, health, energy, size, speed + effective speed, sense, age, generation, mating status); the selected blob shows a health bar. Return to the globe with the Globe control.
 8. **Population history** charts world population over time, one coloured line per species, so booms, crashes, and takeovers are visible at a glance.
@@ -93,7 +93,9 @@ Or use the workspace scripts in `package.json` to run web and Electron together.
 | Regional creature arena (agents, food) | Working prototype |
 | Trait genomes + mutation + selection | Working prototype |
 | Predator / prey dynamics (size-based struggles) | Working prototype |
-| Trait trade-offs (size ↔ speed ↔ energy) | Working prototype |
+| Trait trade-offs (size ↔ speed ↔ energy ↔ armor) | Working prototype |
+| Herding & pack hunting (social gene) | Working prototype |
+| r/K litter strategies (fecundity gene) | Working prototype |
 | Reproduction (maturity, mating, crossover, litters) | Working prototype |
 | Per-creature inspection (click a blob) | Working prototype |
 | Species tracking, naming & phylogeny | Working prototype |
