@@ -192,6 +192,18 @@ function drawGlobe(): void {
   ctx.fill();
   ctx.restore();
 
+  // Red markers on regions that currently host predators.
+  for (let i = 0; i < n; i++) {
+    const reg = view.regions[i]!;
+    if (reg.carnivores <= 0) continue;
+    const mid = ((i + 0.5) / n) * Math.PI * 2 - Math.PI / 2;
+    const mr = R * 0.82;
+    ctx.fillStyle = "#ff5a5a";
+    ctx.beginPath();
+    ctx.arc(cx + Math.cos(mid) * mr, cy + Math.sin(mid) * mr, 3, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
   // Highlight the active region wedge.
   if (view.activeRegionId !== null) {
     const i = view.activeRegionId;
