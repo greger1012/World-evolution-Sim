@@ -335,6 +335,14 @@ function drawArena(): void {
       ctx.lineWidth = 1;
     }
     ctx.stroke();
+    // Heavily plated creatures show a steel ring inside the body.
+    if (c.armor > 0.35 && r > 3) {
+      ctx.strokeStyle = "rgba(200,210,225,0.75)";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.arc(px, py, r * 0.55, 0, Math.PI * 2);
+      ctx.stroke();
+    }
   }
 
   // Selected creature: highlight ring + a small health bar.
@@ -380,6 +388,9 @@ function drawArenaOverlay(
         effSpeed: number;
         sense: number;
         diet: number;
+        armor: number;
+        social: number;
+        fecundity: number;
         hue: number;
         energy: number;
         health: number;
@@ -418,6 +429,10 @@ function drawArenaOverlay(
       ? "seeking mate"
       : "recovering";
   const speciesName = sim.getSpeciesById(selected.speciesId)?.name ?? "unknown";
+  const socialLabel =
+    selected.diet >= 0.5
+      ? `${selected.social.toFixed(2)}${selected.social > 0.4 ? " (pack hunter)" : ""}`
+      : `${selected.social.toFixed(2)}${selected.social > 0.4 ? " (herding)" : ""}`;
   const rows = [
     ["species", speciesName],
     ["diet", `${dietLabel(selected.diet)} (${selected.diet.toFixed(2)})`],
@@ -426,6 +441,9 @@ function drawArenaOverlay(
     ["size", selected.radius.toFixed(2)],
     ["speed", `${selected.speed.toFixed(2)} (eff ${selected.effSpeed.toFixed(2)})`],
     ["sense", selected.sense.toFixed(2)],
+    ["armor", selected.armor.toFixed(2)],
+    ["social", socialLabel],
+    ["litter", selected.fecundity < 0.33 ? "small (K)" : selected.fecundity > 0.66 ? "large (r)" : "medium"],
     ["age", `${selected.age.toFixed(1)} / 55`],
     ["gen", String(selected.generation)],
     ["mating", mating],
