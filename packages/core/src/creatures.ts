@@ -1,4 +1,5 @@
 import { climateFoodFactor } from "./globe.js";
+import { SpatialGrid } from "./spatial.js";
 import type {
   ArenaStats,
   CreatureView,
@@ -161,7 +162,17 @@ export type Creature = {
 /** A creature leaving a region: direction is -1 (left/previous) or +1 (right/next). */
 export type Emigrant = { creature: Creature; direction: -1 | 1 };
 
-type Food = { x: number; y: number };
+type Food = { x: number; y: number; dead: boolean };
+
+/** Grid cell size; interaction radii up to `sense` span a couple of cells. */
+const GRID_CELL = 12;
+/** Cell-pruning pad: creatures can move a few units between rebuild and query. */
+const GRID_SLACK = 4;
+/**
+ * Below this population a plain scan beats the grid (cell pruning cannot pay
+ * for its bookkeeping), so the grid only engages for crowded arenas.
+ */
+const GRID_MIN_ITEMS = 64;
 
 export function isPredator(g: Genome): boolean {
   return g.diet >= 0.5;
@@ -259,6 +270,11 @@ export class RegionEcosystem {
   private creatures: Creature[] = [];
   private food: Food[] = [];
   private emigrants: Emigrant[] = [];
+  private readonly creatureGrid: SpatialGrid<Creature>;
+  private readonly foodGrid: SpatialGrid<Food>;
+  /** Food never moves: the grid is maintained incrementally and only rebuilt
+   * occasionally to purge eaten (dead) references. */
+  private foodPurgeCountdown = 64;
   private generation = 0;
   private births = 0;
   private deaths = 0;
@@ -279,10 +295,13 @@ export class RegionEcosystem {
     this.rng = makeRng(opts.seed);
     this.maxCreatures = opts.maxCreatures;
     this.nextId = opts.idAlloc;
+    this.creatureGrid = new SpatialGrid<Creature>(opts.size, GRID_CELL, GRID_SLACK);
+    this.foodGrid = new SpatialGrid<Food>(opts.size, GRID_CELL, GRID_SLACK);
 
     const capacity = this.foodCapacity();
     const startFood = Math.floor(capacity * 0.85);
     for (let i = 0; i < startFood; i++) this.food.push(this.randomPoint());
+    this.foodGrid.rebuild(this.food);
 
     for (let i = 0; i < opts.initialCreatures; i++) {
       this.creatures.push(this.spawn(randomGenome(this.rng, true), 0, START_ENERGY, -1));
@@ -341,7 +360,7 @@ export class RegionEcosystem {
   }
 
   private randomPoint(): Food {
-    return { x: this.rng() * this.size, y: this.rng() * this.size };
+    return { x: this.rng() * this.size, y: this.rng() * this.size, dead: false };
   }
 
   get population(): number {
@@ -361,7 +380,15 @@ export class RegionEcosystem {
 
   step(dt: number): void {
     if (dt <= 0) return;
+    // Compact food eaten last step and regrow; new food is inserted into the
+    // grid as it spawns, with an occasional rebuild to purge dead references.
+    this.food = this.food.filter((f) => !f.dead);
     this.growFood(dt);
+    if (--this.foodPurgeCountdown <= 0) {
+      this.foodGrid.rebuild(this.food);
+      this.foodPurgeCountdown = 64;
+    }
+    if (this.creatures.length > GRID_MIN_ITEMS) this.creatureGrid.rebuild(this.creatures);
 
     const list = this.creatures;
     const newborns: Creature[] = [];
@@ -369,7 +396,7 @@ export class RegionEcosystem {
     for (const c of list) {
       if (c.dead) continue;
 
-      this.senseAndSteer(c, list, dt);
+      this.senseAndSteer(c, dt);
       this.move(c, dt);
       if (c.migrated) continue; // left for a neighbouring region
 
@@ -395,7 +422,7 @@ export class RegionEcosystem {
       if (c.matingCd > 0) c.matingCd -= dt;
       if (c.attackCd > 0) c.attackCd -= dt;
 
-      this.feed(c, list);
+      this.feed(c);
 
       // Health tracks body condition separately from the food reserve.
       const maxH = MAX_HEALTH * (1 - AGE_HEALTH_PENALTY * (c.age / MAX_AGE));
@@ -413,7 +440,7 @@ export class RegionEcosystem {
       }
 
       if (this.readyToMate(c) && list.length + newborns.length < this.maxCreatures) {
-        const mate = this.findMate(c, list, /*contactOnly*/ true);
+        const mate = this.findMate(c, /*contactOnly*/ true);
         if (mate) {
           this.mate(c, mate, newborns);
         } else if (c.energy >= ASEX_ENERGY) {
@@ -463,14 +490,17 @@ export class RegionEcosystem {
    * Nearest ready, compatible partner — within touching distance when
    * `contactOnly`, otherwise anywhere inside this creature's sense radius.
    */
-  private findMate(c: Creature, list: Creature[], contactOnly: boolean): Creature | null {
+  private findMate(c: Creature, contactOnly: boolean): Creature | null {
     const range = contactOnly
       ? c.genome.size + MATE_CONTACT_BONUS
       : c.genome.sense;
+    // Contact reach depends on the partner's size; pad the cell query by the
+    // largest possible body.
+    const query = contactOnly ? range + GENE_BOUNDS.size[1] : range;
     let best: Creature | null = null;
     let bestD2 = Infinity;
-    for (const o of list) {
-      if (o === c || !this.readyToMate(o) || !this.compatible(c, o)) continue;
+    for (const o of this.candidatesNear(c.x, c.y, query)) {
+      if (o === c || o.migrated || !this.readyToMate(o) || !this.compatible(c, o)) continue;
       const reach = contactOnly ? range + o.genome.size : range;
       const dx = o.x - c.x;
       const dy = o.y - c.y;
@@ -533,7 +563,11 @@ export class RegionEcosystem {
     if (deficit <= 0) return;
     let expected = deficit * FOOD_REGROW * dt;
     while (expected > 0) {
-      if (expected >= 1 || this.rng() < expected) this.food.push(this.randomPoint());
+      if (expected >= 1 || this.rng() < expected) {
+        const f = this.randomPoint();
+        this.food.push(f);
+        this.foodGrid.insert(f);
+      }
       expected -= 1;
     }
   }
@@ -547,17 +581,17 @@ export class RegionEcosystem {
     );
   }
 
-  private nearestPrey(c: Creature, list: Creature[]): Creature | null {
+  private nearestPrey(c: Creature): Creature | null {
     const senseR2 = c.genome.sense * c.genome.sense;
     // Hunters pick targets they can realistically run down; anything faster
     // than their sprint is not worth chasing.
     const maxPreySpeed = effectiveSpeed(c.genome) * PREDATOR_SPRINT;
-    const pack = this.groupmates(c, list, c.x, c.y, PACK_RADIUS);
+    const pack = this.groupmates(c, c.x, c.y, PACK_RADIUS);
     const sizeLimit = this.maxPreySize(c, pack);
     let best: Creature | null = null;
     let bestD2 = senseR2;
-    for (const o of list) {
-      if (o === c || o.dead || isPredator(o.genome)) continue;
+    for (const o of this.candidatesNear(c.x, c.y, c.genome.sense)) {
+      if (o === c || o.dead || o.migrated || isPredator(o.genome)) continue;
       if (o.genome.size > sizeLimit) continue;
       if (effectiveSpeed(o.genome) > maxPreySpeed) continue;
       const dx = o.x - c.x;
@@ -571,12 +605,12 @@ export class RegionEcosystem {
     return best;
   }
 
-  private nearestPredator(c: Creature, list: Creature[]): Creature | null {
+  private nearestPredator(c: Creature): Creature | null {
     const senseR2 = c.genome.sense * c.genome.sense;
     let best: Creature | null = null;
     let bestD2 = senseR2;
-    for (const o of list) {
-      if (o === c || o.dead || !isPredator(o.genome)) continue;
+    for (const o of this.candidatesNear(c.x, c.y, c.genome.sense)) {
+      if (o === c || o.dead || o.migrated || !isPredator(o.genome)) continue;
       if (c.genome.size > o.genome.size * PREY_MAX_RATIO) continue; // too big to be prey
       const dx = o.x - c.x;
       const dy = o.y - c.y;
@@ -589,29 +623,49 @@ export class RegionEcosystem {
     return best;
   }
 
-  private nearestFood(c: Creature): number {
+  private nearestFood(c: Creature): Food | null {
     const senseR2 = c.genome.sense * c.genome.sense;
-    let best = -1;
+    let best: Food | null = null;
     let bestD2 = senseR2;
-    for (let i = 0; i < this.food.length; i++) {
-      const f = this.food[i]!;
+    for (const f of this.foodNear(c.x, c.y, c.genome.sense)) {
+      if (f.dead) continue;
       const dx = f.x - c.x;
       const dy = f.y - c.y;
       const d2 = dx * dx + dy * dy;
       if (d2 < bestD2) {
         bestD2 = d2;
-        best = i;
+        best = f;
       }
     }
     return best;
   }
 
+  /** Grid pruning pays only for crowded arenas and queries much smaller than
+   * the arena; otherwise a plain scan of the backing array is faster. */
+  private gridWorthIt(count: number, radius: number): boolean {
+    return count > GRID_MIN_ITEMS && (radius + GRID_SLACK) * 2 < this.size * 0.55;
+  }
+
+  /** Candidate creatures near a point: grid-pruned only when it pays off. */
+  private candidatesNear(x: number, y: number, radius: number): readonly Creature[] {
+    return this.gridWorthIt(this.creatures.length, radius)
+      ? this.creatureGrid.near(x, y, radius)
+      : this.creatures;
+  }
+
+  /** Candidate food near a point: grid-pruned only when it pays off. */
+  private foodNear(x: number, y: number, radius: number): readonly Food[] {
+    return this.gridWorthIt(this.food.length, radius)
+      ? this.foodGrid.near(x, y, radius)
+      : this.food;
+  }
+
   /** Same-species neighbours of the same trophic type within `radius` of (x, y). */
-  private groupmates(c: Creature, list: Creature[], x: number, y: number, radius: number): number {
+  private groupmates(c: Creature, x: number, y: number, radius: number): number {
     const pred = isPredator(c.genome);
     const r2 = radius * radius;
     let n = 0;
-    for (const o of list) {
+    for (const o of this.candidatesNear(x, y, radius)) {
       if (o === c || o.dead || o.migrated) continue;
       if (o.speciesId !== c.speciesId || isPredator(o.genome) !== pred) continue;
       const dx = o.x - x;
@@ -622,14 +676,14 @@ export class RegionEcosystem {
   }
 
   /** Nudge heading toward the local centroid of same-species groupmates. */
-  private steerCohesion(c: Creature, list: Creature[], dt: number): void {
+  private steerCohesion(c: Creature, dt: number): void {
     if (c.genome.social < 0.15) return;
     const pred = isPredator(c.genome);
     const r2 = c.genome.sense * c.genome.sense;
     let sx = 0;
     let sy = 0;
     let n = 0;
-    for (const o of list) {
+    for (const o of this.candidatesNear(c.x, c.y, c.genome.sense)) {
       if (o === c || o.dead || o.migrated) continue;
       if (o.speciesId !== c.speciesId || isPredator(o.genome) !== pred) continue;
       const dx = o.x - c.x;
@@ -661,45 +715,44 @@ export class RegionEcosystem {
     this.steerToward(c, 2 * c.x - tx, 2 * c.y - ty, dt);
   }
 
-  private senseAndSteer(c: Creature, list: Creature[], dt: number): void {
+  private senseAndSteer(c: Creature, dt: number): void {
     if (isPredator(c.genome)) {
       // Well-fed adults court; hungry ones hunt.
       if (this.readyToMate(c)) {
-        const partner = this.findMate(c, list, false);
+        const partner = this.findMate(c, false);
         if (partner) {
           this.steerToward(c, partner.x, partner.y, dt);
           return;
         }
       }
-      const prey = this.nearestPrey(c, list);
+      const prey = this.nearestPrey(c);
       if (prey) {
         this.steerToward(c, prey.x, prey.y, dt);
         return;
       }
       // No target: social hunters regroup with the pack.
-      this.steerCohesion(c, list, dt);
+      this.steerCohesion(c, dt);
     } else {
-      const threat = this.nearestPredator(c, list);
+      const threat = this.nearestPredator(c);
       if (threat) {
         this.steerAway(c, threat.x, threat.y, dt);
         return;
       }
       if (this.readyToMate(c)) {
-        const partner = this.findMate(c, list, false);
+        const partner = this.findMate(c, false);
         if (partner) {
           this.steerToward(c, partner.x, partner.y, dt);
           return;
         }
       }
-      const fi = this.nearestFood(c);
-      if (fi >= 0) {
-        const f = this.food[fi]!;
+      const f = this.nearestFood(c);
+      if (f) {
         this.steerToward(c, f.x, f.y, dt);
         // Grazers drift toward the herd even while feeding.
-        this.steerCohesion(c, list, dt);
+        this.steerCohesion(c, dt);
         return;
       }
-      this.steerCohesion(c, list, dt);
+      this.steerCohesion(c, dt);
     }
     c.heading += (this.rng() - 0.5) * TURN_JITTER * dt;
   }
@@ -736,22 +789,21 @@ export class RegionEcosystem {
   }
 
   /** Eat plants (herbivory) and/or catch prey (carnivory), scaled by diet. */
-  private feed(c: Creature, list: Creature[]): void {
+  private feed(c: Creature): void {
     const diet = c.genome.diet;
 
     // Herbivory: consume nearby plants (efficiency falls as diet -> carnivore).
     const plantGain = PLANT_ENERGY * (1 - diet);
-    if (plantGain > 0.001) {
+    if (plantGain > 0.001 && c.energy < MAX_ENERGY) {
       const reach = c.genome.size + FOOD_RADIUS;
       const reach2 = reach * reach;
-      for (let i = this.food.length - 1; i >= 0; i--) {
-        const f = this.food[i]!;
+      for (const f of this.foodNear(c.x, c.y, reach)) {
+        if (f.dead) continue;
         const dx = f.x - c.x;
         const dy = f.y - c.y;
         if (dx * dx + dy * dy <= reach2) {
           c.energy += plantGain;
-          const lastFood = this.food.pop()!;
-          if (i < this.food.length) this.food[i] = lastFood;
+          f.dead = true;
           if (c.energy >= MAX_ENERGY) return;
         }
       }
@@ -761,12 +813,13 @@ export class RegionEcosystem {
     // on the size ratio — big predators bring down big prey, while relatively
     // big prey usually win the struggle, escape, and can injure the attacker.
     if (diet > 0.05 && c.attackCd <= 0) {
-      const pack = this.groupmates(c, list, c.x, c.y, PACK_RADIUS);
+      const pack = this.groupmates(c, c.x, c.y, PACK_RADIUS);
       const sizeLimit = this.maxPreySize(c, pack);
-      let target: Creature | null = null;
+      const query = c.genome.size + sizeLimit + CATCH_REACH;
+      let prey: Creature | null = null;
       let bestD2 = Infinity;
-      for (const o of list) {
-        if (o === c || o.dead || isPredator(o.genome)) continue;
+      for (const o of this.candidatesNear(c.x, c.y, query)) {
+        if (o === c || o.dead || o.migrated || isPredator(o.genome)) continue;
         if (o.genome.size > sizeLimit) continue;
         const dx = o.x - c.x;
         const dy = o.y - c.y;
@@ -774,40 +827,40 @@ export class RegionEcosystem {
         const d2 = dx * dx + dy * dy;
         if (d2 <= contact * contact && d2 < bestD2) {
           bestD2 = d2;
-          target = o;
+          prey = o;
         }
       }
-      if (target) {
+      if (prey) {
         c.attackCd = ATTACK_COOLDOWN;
         c.energy -= ATTACK_COST;
         if (c.energy < 0) c.energy = 0;
-        const ratio = c.genome.size / (target.genome.size * 1.15);
+        const ratio = c.genome.size / (prey.genome.size * 1.15);
         let chance = clamp(
           CATCH_BASE_CHANCE * Math.pow(ratio, 2.5),
           CATCH_MIN_CHANCE,
           CATCH_MAX_CHANCE,
         );
         // Plating blocks; herds confuse; packs overwhelm.
-        chance *= 1 - ARMOR_DEFENSE * target.genome.armor;
-        const herd = this.groupmates(target, list, target.x, target.y, HERD_RADIUS);
-        chance *= 1 - Math.min(0.4, HERD_DEFENSE * target.genome.social * herd);
+        chance *= 1 - ARMOR_DEFENSE * prey.genome.armor;
+        const herd = this.groupmates(prey, prey.x, prey.y, HERD_RADIUS);
+        chance *= 1 - Math.min(0.4, HERD_DEFENSE * prey.genome.social * herd);
         chance *= 1 + PACK_BONUS * c.genome.social * Math.min(4, pack);
         chance = clamp(chance, 0.02, 0.97);
 
         if (this.rng() < chance) {
           const raw = Math.min(
             MEAT_ENERGY_CAP,
-            MEAT_ENERGY_K * target.genome.size + 0.5 * target.energy,
+            MEAT_ENERGY_K * prey.genome.size + 0.5 * prey.energy,
           );
-          target.dead = true;
-          target.energy = 0;
+          prey.dead = true;
+          prey.energy = 0;
           this.deaths++;
           if (pack > 0 && c.genome.social > 0.2) {
             // Pack kill: the striker feeds first, packmates share the rest.
             c.energy += raw * (1 - KILL_SHARE) * diet;
             const share = (raw * KILL_SHARE) / pack;
             const pr2 = PACK_RADIUS * PACK_RADIUS;
-            for (const o of list) {
+            for (const o of this.candidatesNear(c.x, c.y, PACK_RADIUS)) {
               if (o === c || o.dead || o.migrated) continue;
               if (o.speciesId !== c.speciesId || !isPredator(o.genome)) continue;
               const dx = o.x - c.x;
@@ -823,9 +876,9 @@ export class RegionEcosystem {
           // The prey fights free: big and armored prey punish the attacker.
           c.health -=
             STRUGGLE_INJURY *
-            (target.genome.size / c.genome.size) *
-            (1 + ARMOR_SPIKE * target.genome.armor);
-          target.heading = Math.atan2(target.y - c.y, target.x - c.x);
+            (prey.genome.size / c.genome.size) *
+            (1 + ARMOR_SPIKE * prey.genome.armor);
+          prey.heading = Math.atan2(prey.y - c.y, prey.x - c.x);
         }
       }
     }
