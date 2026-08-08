@@ -331,7 +331,21 @@ function drawArenaOverlay(
   oy: number,
   stats: ArenaStats | null,
   selected:
-    | { id: number; radius: number; speed: number; sense: number; diet: number; hue: number; energy: number; health: number; age: number; generation: number }
+    | {
+        id: number;
+        radius: number;
+        speed: number;
+        effSpeed: number;
+        sense: number;
+        diet: number;
+        hue: number;
+        energy: number;
+        health: number;
+        age: number;
+        generation: number;
+        mature: boolean;
+        readyToMate: boolean;
+      }
     | null,
 ): void {
   ctx.textAlign = "left";
@@ -356,15 +370,21 @@ function drawArenaOverlay(
     return;
   }
 
+  const mating = !selected.mature
+    ? "juvenile"
+    : selected.readyToMate
+      ? "seeking mate"
+      : "recovering";
   const rows = [
     ["diet", `${dietLabel(selected.diet)} (${selected.diet.toFixed(2)})`],
     ["health", selected.health.toFixed(2)],
     ["energy", selected.energy.toFixed(2)],
     ["size", selected.radius.toFixed(2)],
-    ["speed", selected.speed.toFixed(2)],
+    ["speed", `${selected.speed.toFixed(2)} (eff ${selected.effSpeed.toFixed(2)})`],
     ["sense", selected.sense.toFixed(2)],
     ["age", `${selected.age.toFixed(1)} / 55`],
     ["gen", String(selected.generation)],
+    ["mating", mating],
   ];
   const boxX = ox + 6;
   const boxY = oy + 32;

@@ -69,13 +69,20 @@ export type CreatureView = {
   energy: number;
   /** 0–1 body condition; drops when starving, regenerates when well fed. */
   health: number;
+  /** Speed gene value. */
   speed: number;
+  /** Actual pace after the size trade-off (speed / sqrt(size)). */
+  effSpeed: number;
   sense: number;
   /** 0–1 trophic tendency (see Genome.diet). */
   diet: number;
   /** Age in simulated seconds. */
   age: number;
   generation: number;
+  /** Old enough to breed. */
+  mature: boolean;
+  /** Mature, well fed, healthy, and off cooldown. */
+  readyToMate: boolean;
 };
 
 export type FoodView = {

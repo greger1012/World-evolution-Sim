@@ -44,10 +44,12 @@ const DIET_INNOVATION_STEP = 0.22; // stddev of that larger jump
 
 const MOVE_SPEED = 3.2; // world units/sec per unit of `speed`
 const TURN_JITTER = 2.2; // wander turn rate scale
-const PREDATOR_START_FRACTION = 0.18;
+const PREDATOR_START_FRACTION = 0.22;
 
+// Trade-off: mass (~size^2 here) times speed^2 — raising the speed gene burns
+// disproportionately more energy, and bigger bodies pay more for the same gene.
 const BASE_METABOLISM = 0.02; // energy/sec baseline
-const MOVE_COST = 0.017; // * size^3 * speed^2
+const MOVE_COST = 0.022; // * size^2 * speed^2
 const PREDATOR_MOVE_DISCOUNT = 0.55; // hunters are built for the chase
 const SENSE_COST = 0.0008; // * sense^2
 const PREDATOR_UPKEEP = 0.006; // extra baseline for hunters
@@ -55,10 +57,23 @@ const PREDATOR_UPKEEP = 0.006; // extra baseline for hunters
 const START_ENERGY = 0.55;
 const MAX_ENERGY = 1.6;
 const PLANT_ENERGY = 0.34; // per plant, scaled by (1 - diet)
-const REPRO_ENERGY = 1.15; // reproduce at/above this
-const REPRO_COST = 0.64; // parent energy spent to spawn a child
-const CHILD_ENERGY = 0.46;
 const MAX_AGE = 55; // sim-seconds
+
+// Reproduction system: adults that are well fed seek a compatible mate
+// (same trophic type, similar lineage colour); pairs pay energy and produce a
+// small litter via genome crossover + mutation. Lonely but very well-fed
+// creatures can fall back to costlier asexual budding.
+const MATURITY_AGE = 6; // sim-seconds before a creature can breed
+const MATE_ENERGY = 0.95; // energy needed to seek a mate
+const MATE_COST = 0.42; // paid by EACH parent on mating
+const MATE_CONTACT_BONUS = 0.6; // extra reach to touch a mate
+const REPRO_COOLDOWN = 5; // sim-seconds between breeding attempts
+const HUE_COMPATIBILITY = 70; // max lineage-colour distance for mating (degrees)
+const LITTER_SECOND_CHILD_CHANCE = 0.35;
+const ASEX_ENERGY = 1.28; // asexual fallback threshold (well above mating)
+const ASEX_COST = 0.64;
+const CHILD_ENERGY = 0.46;
+const REPRO_HEALTH_MIN = 0.5; // must be at least this healthy to breed
 
 // Health: body condition, distinct from the energy (food) reserve.
 const START_HEALTH = 0.85;
@@ -67,13 +82,21 @@ const STARVE_HEALTH_RATE = 0.32; // health/sec lost while energy is empty
 const REGEN_HEALTH_RATE = 0.12; // health/sec regained while well fed
 const REGEN_ENERGY = 0.5; // energy above which health regenerates
 const AGE_HEALTH_PENALTY = 0.4; // max health lost by end of life
-const REPRO_HEALTH_MIN = 0.5; // must be at least this healthy to breed
 
-// Predation.
-const PREY_MAX_RATIO = 1.4; // predator can catch prey up to this * own size
+// Predation with size-based struggle: bigger predators can take down bigger
+// prey; relatively big prey usually win the struggle, escape, and may injure
+// the attacker.
+const PREY_MAX_RATIO = 1.4; // predator will attempt prey up to this * own size
+const PREDATOR_SPRINT = 1.22; // hunting burst: predators move this much faster
 const CATCH_REACH = 0.9; // extra lunge distance when striking prey
-const MEAT_ENERGY_K = 0.8; // energy per unit of prey body size
-const MEAT_ENERGY_CAP = 1.35;
+const CATCH_BASE_CHANCE = 0.9; // scaled by (predSize / (preySize*1.15))^2.5
+const CATCH_MIN_CHANCE = 0.08;
+const CATCH_MAX_CHANCE = 0.95;
+const ATTACK_COOLDOWN = 0.55; // sim-seconds between strikes
+const ATTACK_COST = 0.04; // energy per strike, hit or miss
+const STRUGGLE_INJURY = 0.06; // attacker health lost * (preySize/predSize) on a miss
+const MEAT_ENERGY_K = 0.92; // energy per unit of prey body size
+const MEAT_ENERGY_CAP = 1.5;
 
 const FOOD_RADIUS = 0.35;
 const FOOD_BASE_CAPACITY = 135; // * richness -> per-region plant carrying capacity
@@ -90,12 +113,29 @@ type Creature = {
   generation: number;
   genome: Genome;
   dead: boolean;
+  /** Time until this creature may breed again. */
+  matingCd: number;
+  /** Time until a predator may strike again. */
+  attackCd: number;
 };
 
 type Food = { x: number; y: number };
 
 function isPredator(g: Genome): boolean {
   return g.diet >= 0.5;
+}
+
+/**
+ * Trade-off: actual movement speed falls with body size, so a big body must
+ * be paid for with predation power rather than raw pace.
+ */
+function effectiveSpeed(g: Genome): number {
+  return g.speed / Math.sqrt(g.size);
+}
+
+function hueDistance(a: number, b: number): number {
+  const d = Math.abs(a - b) % 360;
+  return d > 180 ? 360 - d : d;
 }
 
 function randomGenome(rng: () => number, allowPredator: boolean): Genome {
@@ -128,13 +168,32 @@ function mutate(g: Genome, rng: () => number): Genome {
   };
 }
 
+/** Sexual reproduction: each gene comes from either parent, then mutates. */
+function crossover(a: Genome, b: Genome, rng: () => number): Genome {
+  const pick = (x: number, y: number) => (rng() < 0.5 ? x : y);
+  return mutate(
+    {
+      size: pick(a.size, b.size),
+      speed: pick(a.speed, b.speed),
+      sense: pick(a.sense, b.sense),
+      diet: pick(a.diet, b.diet),
+      hue: pick(a.hue, b.hue),
+    },
+    rng,
+  );
+}
+
 /**
  * A single region's arena. Plants (food points) regrow toward a carrying
  * capacity; creatures carry heritable genomes (size, speed, sense, diet, hue)
  * and spend energy to move and sense. Herbivores graze plants and flee
- * predators; carnivores hunt smaller creatures. Reproduction copies the genome
- * with mutation, and starvation or old age erodes health until death. Natural
- * selection emerges from the energy budget and predation pressure.
+ * predators; carnivores hunt. Body size trades off against pace (big = slow)
+ * but wins predation struggles on both sides; the speed gene burns extra
+ * energy. Mature, well-fed creatures court compatible partners (same trophic
+ * type, similar lineage colour) and produce litters via crossover + mutation,
+ * with a costly asexual fallback for the lonely. Starvation, injury, or old
+ * age erode health until death. Selection emerges from the energy budget,
+ * predation pressure, and mate availability.
  */
 export class RegionEcosystem {
   readonly size: number;
@@ -181,6 +240,8 @@ export class RegionEcosystem {
       generation,
       genome,
       dead: false,
+      matingCd: 1.5,
+      attackCd: 0,
     };
   }
 
@@ -212,7 +273,7 @@ export class RegionEcosystem {
       const g = c.genome;
       const pred = isPredator(g);
       const moveCost =
-        MOVE_COST * g.size * g.size * g.size * g.speed * g.speed *
+        MOVE_COST * g.size * g.size * g.speed * g.speed *
         (pred ? PREDATOR_MOVE_DISCOUNT : 1);
       const cost =
         BASE_METABOLISM +
@@ -222,6 +283,8 @@ export class RegionEcosystem {
       c.energy -= cost * dt;
       if (c.energy < 0) c.energy = 0;
       c.age += dt;
+      if (c.matingCd > 0) c.matingCd -= dt;
+      if (c.attackCd > 0) c.attackCd -= dt;
 
       this.feed(c, list);
 
@@ -240,24 +303,17 @@ export class RegionEcosystem {
         continue;
       }
 
-      if (
-        c.energy >= REPRO_ENERGY &&
-        c.health >= REPRO_HEALTH_MIN &&
-        list.length + newborns.length < this.maxCreatures
-      ) {
-        c.energy -= REPRO_COST;
-        const childGen = c.generation + 1;
-        if (childGen > this.generation) this.generation = childGen;
-        this.births++;
-        newborns.push(
-          this.spawn(
-            mutate(c.genome, this.rng),
-            childGen,
-            CHILD_ENERGY,
-            clamp(c.x + (this.rng() - 0.5) * 2, 0, this.size),
-            clamp(c.y + (this.rng() - 0.5) * 2, 0, this.size),
-          ),
-        );
+      if (this.readyToMate(c) && list.length + newborns.length < this.maxCreatures) {
+        const mate = this.findMate(c, list, /*contactOnly*/ true);
+        if (mate) {
+          this.mate(c, mate, newborns);
+        } else if (c.energy >= ASEX_ENERGY) {
+          // Lonely but very well fed: costlier asexual budding keeps sparse
+          // populations from dead-ending while still favouring pair mating.
+          c.energy -= ASEX_COST;
+          c.matingCd = REPRO_COOLDOWN;
+          this.birth(mutate(c.genome, this.rng), c.generation + 1, c, newborns);
+        }
       }
 
       if (c.energy > MAX_ENERGY) c.energy = MAX_ENERGY;
@@ -277,6 +333,73 @@ export class RegionEcosystem {
     }
   }
 
+  private readyToMate(c: Creature): boolean {
+    return (
+      !c.dead &&
+      c.age >= MATURITY_AGE &&
+      c.energy >= MATE_ENERGY &&
+      c.health >= REPRO_HEALTH_MIN &&
+      c.matingCd <= 0
+    );
+  }
+
+  private compatible(a: Creature, b: Creature): boolean {
+    return (
+      isPredator(a.genome) === isPredator(b.genome) &&
+      hueDistance(a.genome.hue, b.genome.hue) <= HUE_COMPATIBILITY
+    );
+  }
+
+  /**
+   * Nearest ready, compatible partner — within touching distance when
+   * `contactOnly`, otherwise anywhere inside this creature's sense radius.
+   */
+  private findMate(c: Creature, list: Creature[], contactOnly: boolean): Creature | null {
+    const range = contactOnly
+      ? c.genome.size + MATE_CONTACT_BONUS
+      : c.genome.sense;
+    let best: Creature | null = null;
+    let bestD2 = Infinity;
+    for (const o of list) {
+      if (o === c || !this.readyToMate(o) || !this.compatible(c, o)) continue;
+      const reach = contactOnly ? range + o.genome.size : range;
+      const dx = o.x - c.x;
+      const dy = o.y - c.y;
+      const d2 = dx * dx + dy * dy;
+      if (d2 <= reach * reach && d2 < bestD2) {
+        bestD2 = d2;
+        best = o;
+      }
+    }
+    return best;
+  }
+
+  private mate(a: Creature, b: Creature, newborns: Creature[]): void {
+    a.energy -= MATE_COST;
+    b.energy -= MATE_COST;
+    a.matingCd = REPRO_COOLDOWN;
+    b.matingCd = REPRO_COOLDOWN;
+    const gen = Math.max(a.generation, b.generation) + 1;
+    const litter = 1 + (this.rng() < LITTER_SECOND_CHILD_CHANCE ? 1 : 0);
+    for (let i = 0; i < litter; i++) {
+      this.birth(crossover(a.genome, b.genome, this.rng), gen, a, newborns);
+    }
+  }
+
+  private birth(genome: Genome, gen: number, near: Creature, newborns: Creature[]): void {
+    if (gen > this.generation) this.generation = gen;
+    this.births++;
+    newborns.push(
+      this.spawn(
+        genome,
+        gen,
+        CHILD_ENERGY,
+        clamp(near.x + (this.rng() - 0.5) * 2, 0, this.size),
+        clamp(near.y + (this.rng() - 0.5) * 2, 0, this.size),
+      ),
+    );
+  }
+
   private growFood(dt: number): void {
     const capacity = this.foodCapacity();
     const deficit = capacity - this.food.length;
@@ -290,11 +413,15 @@ export class RegionEcosystem {
 
   private nearestPrey(c: Creature, list: Creature[]): Creature | null {
     const senseR2 = c.genome.sense * c.genome.sense;
+    // Hunters pick targets they can realistically run down; anything faster
+    // than their sprint is not worth chasing.
+    const maxPreySpeed = effectiveSpeed(c.genome) * PREDATOR_SPRINT;
     let best: Creature | null = null;
     let bestD2 = senseR2;
     for (const o of list) {
       if (o === c || o.dead || isPredator(o.genome)) continue;
       if (o.genome.size > c.genome.size * PREY_MAX_RATIO) continue;
+      if (effectiveSpeed(o.genome) > maxPreySpeed) continue;
       const dx = o.x - c.x;
       const dy = o.y - c.y;
       const d2 = dx * dx + dy * dy;
@@ -355,6 +482,14 @@ export class RegionEcosystem {
 
   private senseAndSteer(c: Creature, list: Creature[], dt: number): void {
     if (isPredator(c.genome)) {
+      // Well-fed adults court; hungry ones hunt.
+      if (this.readyToMate(c)) {
+        const partner = this.findMate(c, list, false);
+        if (partner) {
+          this.steerToward(c, partner.x, partner.y, dt);
+          return;
+        }
+      }
       const prey = this.nearestPrey(c, list);
       if (prey) {
         this.steerToward(c, prey.x, prey.y, dt);
@@ -365,6 +500,13 @@ export class RegionEcosystem {
       if (threat) {
         this.steerAway(c, threat.x, threat.y, dt);
         return;
+      }
+      if (this.readyToMate(c)) {
+        const partner = this.findMate(c, list, false);
+        if (partner) {
+          this.steerToward(c, partner.x, partner.y, dt);
+          return;
+        }
       }
       const fi = this.nearestFood(c);
       if (fi >= 0) {
@@ -377,7 +519,8 @@ export class RegionEcosystem {
   }
 
   private move(c: Creature, dt: number): void {
-    const v = c.genome.speed * MOVE_SPEED;
+    const sprint = isPredator(c.genome) ? PREDATOR_SPRINT : 1;
+    const v = effectiveSpeed(c.genome) * MOVE_SPEED * sprint;
     c.x += Math.cos(c.heading) * v * dt;
     c.y += Math.sin(c.heading) * v * dt;
     if (c.x < 0) {
@@ -420,24 +563,47 @@ export class RegionEcosystem {
       }
     }
 
-    // Carnivory: catch the nearest catchable prey in contact.
-    if (diet > 0.05) {
+    // Carnivory: strike the nearest catchable prey in contact. Success depends
+    // on the size ratio — big predators bring down big prey, while relatively
+    // big prey usually win the struggle, escape, and can injure the attacker.
+    if (diet > 0.05 && c.attackCd <= 0) {
+      let target: Creature | null = null;
+      let bestD2 = Infinity;
       for (const o of list) {
         if (o === c || o.dead || isPredator(o.genome)) continue;
         if (o.genome.size > c.genome.size * PREY_MAX_RATIO) continue;
         const dx = o.x - c.x;
         const dy = o.y - c.y;
         const contact = c.genome.size + o.genome.size + CATCH_REACH;
-        if (dx * dx + dy * dy <= contact * contact) {
+        const d2 = dx * dx + dy * dy;
+        if (d2 <= contact * contact && d2 < bestD2) {
+          bestD2 = d2;
+          target = o;
+        }
+      }
+      if (target) {
+        c.attackCd = ATTACK_COOLDOWN;
+        c.energy -= ATTACK_COST;
+        if (c.energy < 0) c.energy = 0;
+        const ratio = c.genome.size / (target.genome.size * 1.15);
+        const chance = clamp(
+          CATCH_BASE_CHANCE * Math.pow(ratio, 2.5),
+          CATCH_MIN_CHANCE,
+          CATCH_MAX_CHANCE,
+        );
+        if (this.rng() < chance) {
           const gain = Math.min(
             MEAT_ENERGY_CAP,
-            MEAT_ENERGY_K * o.genome.size + 0.5 * o.energy,
+            MEAT_ENERGY_K * target.genome.size + 0.5 * target.energy,
           ) * diet;
           c.energy += gain;
-          o.dead = true;
-          o.energy = 0;
+          target.dead = true;
+          target.energy = 0;
           this.deaths++;
-          if (c.energy >= MAX_ENERGY) return;
+        } else {
+          // The prey fights free: the bigger it is, the worse for the attacker.
+          c.health -= STRUGGLE_INJURY * (target.genome.size / c.genome.size);
+          target.heading = Math.atan2(target.y - c.y, target.x - c.x);
         }
       }
     }
@@ -456,10 +622,13 @@ export class RegionEcosystem {
         energy: clamp(c.energy / MAX_ENERGY, 0, 1),
         health: clamp(c.health, 0, 1),
         speed: c.genome.speed,
+        effSpeed: effectiveSpeed(c.genome),
         sense: c.genome.sense,
         diet: c.genome.diet,
         age: c.age,
         generation: c.generation,
+        mature: c.age >= MATURITY_AGE,
+        readyToMate: this.readyToMate(c),
       };
     }
     return out;

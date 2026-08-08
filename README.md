@@ -69,8 +69,10 @@ Or use the workspace scripts in `package.json` to run web and Electron together.
 1. Watch the **stratified globe** (a shaded sphere) update as the simulation runs; wedge colour reflects each region's living biomass.
 2. Use the **speed** dropdown to accelerate or slow time (evolution runs faster at higher multipliers).
 3. **Pause / Resume** to freeze the world state.
-4. **Click a region** on the globe to open its **living arena**: creatures ("blobs") with heritable traits (size, speed, sense, diet) graze plants, flee or hunt each other, reproduce with mutation, and die. Herbivores carry a soft ring; **predators carry a bold red ring**.
-5. **Click a blob** to select it and read its individual stats (diet, health, energy, size, speed, sense, age, generation); the selected blob shows a health bar. Return to the globe with the Globe control.
+4. **Click a region** on the globe to open its **living arena**: creatures ("blobs") with heritable traits (size, speed, sense, diet) graze plants, flee or hunt each other, breed, and die. Herbivores carry a soft ring; **predators carry a bold red ring**.
+5. **Trait trade-offs** mirror the real world: bigger bodies are slower but take down bigger prey and win defensive struggles (failed attacks injure the attacker); a higher speed gene burns disproportionately more energy; sharper senses cost upkeep.
+6. **Reproduction**: creatures mature, then well-fed adults court compatible partners (same trophic type, similar lineage colour) and produce litters via genome crossover + mutation — with a costly asexual fallback for lonely creatures. Lineage-colour compatibility gives soft speciation.
+7. **Click a blob** to select it and read its individual stats (diet, health, energy, size, speed + effective speed, sense, age, generation, mating status); the selected blob shows a health bar. Return to the globe with the Globe control.
 
 ## Scripts
 
@@ -87,10 +89,12 @@ Or use the workspace scripts in `package.json` to run web and Electron together.
 | Globe / regions / time controls | Working prototype |
 | Regional creature arena (agents, food) | Working prototype |
 | Trait genomes + mutation + selection | Working prototype |
-| Predator / prey dynamics | Working prototype |
+| Predator / prey dynamics (size-based struggles) | Working prototype |
+| Trait trade-offs (size ↔ speed ↔ energy) | Working prototype |
+| Reproduction (maturity, mating, crossover, litters) | Working prototype |
 | Per-creature inspection (click a blob) | Working prototype |
-| Detailed environments & biomes | Planned |
-| Cross-region migration | Planned |
+| Detailed environments & biomes (WorldBox-style world map) | Planned |
+| Cross-region migration & species spread | Planned |
 
 Feedback and contributions can wait until the core evolution model is further along; the public surface will keep changing.
 
