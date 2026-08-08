@@ -75,6 +75,7 @@ Or use the workspace scripts in `package.json` to run web and Electron together.
 7. **Click a blob** to select it and read its individual stats (species, diet, health, energy, size, speed + effective speed, sense, age, generation, mating status); the selected blob shows a health bar. Return to the globe with the Globe control.
 8. **Population history** charts world population over time, one coloured line per species, so booms, crashes, and takeovers are visible at a glance.
 9. **Phylogeny** shows every significant species as a lifespan bar (founding → extinction), colour-coded by lineage, with connectors to the parent species it split from. Carnivorous lineages carry a red dot. Species get procedural names (herbivores like *Ryntaella*, carnivores like *Vilodon*).
+10. **A connected world**: each region's side borders lead to its neighbours — crossing is chancy and costs energy, but species genuinely migrate, invade, and spread around the ring. The globe's outer **climate ring** shows each region's temperature (frozen blue → scorching red); regions have biomes (tundra, boreal forest, steppe, temperate forest, jungle, desert) with real metabolic effects — cold punishes small bodies, heat punishes large ones, and climate extremes grow less food.
 
 ## Scripts
 
@@ -97,8 +98,10 @@ Or use the workspace scripts in `package.json` to run web and Electron together.
 | Per-creature inspection (click a blob) | Working prototype |
 | Species tracking, naming & phylogeny | Working prototype |
 | Population history charts | Working prototype |
-| Detailed environments & biomes (WorldBox-style world map) | Planned |
-| Cross-region migration & species spread | Planned |
+| Cross-region migration & species spread | Working prototype |
+| Climate bands & biomes (metabolic effects) | Working prototype |
+| Full 2D world map (WorldBox-style) | Planned |
+| World events (droughts, disease, disasters) | Planned |
 
 Feedback and contributions can wait until the core evolution model is further along; the public surface will keep changing.
 
