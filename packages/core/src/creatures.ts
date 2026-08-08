@@ -42,6 +42,28 @@ const HUE_MUTATION = 10; // degrees stddev
 const DIET_MUTATION = 0.04; // additive stddev on diet in [0,1]
 const DIET_INNOVATION_CHANCE = 0.02; // chance of a larger diet jump
 const DIET_INNOVATION_STEP = 0.22; // stddev of that larger jump
+const UNIT_GENE_MUTATION = 0.05; // additive stddev for armor/social/fecundity
+
+// Armor: plating blocks and punishes attacks, but is heavy and costly.
+const ARMOR_COST = 0.15; // energy/sec * armor * size
+const ARMOR_SPEED_PENALTY = 0.35; // fraction of pace lost at full armor
+const ARMOR_DEFENSE = 0.3; // catch chance *= 1 - this * armor
+const ARMOR_SPIKE = 0.7; // attacker injury *= 1 + this * armor
+
+// Social: herbivores herd for safety; carnivores hunt in packs.
+const HERD_RADIUS = 5; // same-species neighbours that count as a herd
+const HERD_DEFENSE = 0.08; // catch chance *= 1 - min(0.4, this * social * mates)
+const PACK_RADIUS = 6; // same-species hunters that count as a pack
+const PACK_BONUS = 0.22; // catch chance *= 1 + this * social * packmates (<=4)
+const PACK_PREY_RATIO = 0.22; // packs attempt prey up to this much bigger per mate
+const KILL_SHARE = 0.45; // fraction of a pack kill shared with packmates
+const COHESION_TURN = 2.5; // group-cohesion steering rate * social
+
+// Fecundity (r/K): a fixed birth pool splits across the litter.
+const MAX_LITTER = 3;
+const BIRTH_POOL = 0.92; // ~ both parents' mating spend
+const CHILD_ENERGY_MIN = 0.17;
+const CHILD_ENERGY_MAX = 0.46;
 
 const MOVE_SPEED = 3.2; // world units/sec per unit of `speed`
 const TURN_JITTER = 2.2; // wander turn rate scale
@@ -70,10 +92,8 @@ const MATE_COST = 0.42; // paid by EACH parent on mating
 const MATE_CONTACT_BONUS = 0.6; // extra reach to touch a mate
 const REPRO_COOLDOWN = 5; // sim-seconds between breeding attempts
 const HUE_COMPATIBILITY = 70; // max lineage-colour distance for mating (degrees)
-const LITTER_SECOND_CHILD_CHANCE = 0.35;
 const ASEX_ENERGY = 1.28; // asexual fallback threshold (well above mating)
 const ASEX_COST = 0.64;
-const CHILD_ENERGY = 0.46;
 const REPRO_HEALTH_MIN = 0.5; // must be at least this healthy to breed
 
 // Health: body condition, distinct from the energy (food) reserve.
@@ -88,16 +108,16 @@ const AGE_HEALTH_PENALTY = 0.4; // max health lost by end of life
 // prey; relatively big prey usually win the struggle, escape, and may injure
 // the attacker.
 const PREY_MAX_RATIO = 1.4; // predator will attempt prey up to this * own size
-const PREDATOR_SPRINT = 1.22; // hunting burst: predators move this much faster
+const PREDATOR_SPRINT = 1.38; // hunting burst: predators move this much faster
 const CATCH_REACH = 0.9; // extra lunge distance when striking prey
 const CATCH_BASE_CHANCE = 0.9; // scaled by (predSize / (preySize*1.15))^2.5
-const CATCH_MIN_CHANCE = 0.08;
+const CATCH_MIN_CHANCE = 0.12;
 const CATCH_MAX_CHANCE = 0.95;
 const ATTACK_COOLDOWN = 0.55; // sim-seconds between strikes
-const ATTACK_COST = 0.04; // energy per strike, hit or miss
-const STRUGGLE_INJURY = 0.06; // attacker health lost * (preySize/predSize) on a miss
-const MEAT_ENERGY_K = 0.92; // energy per unit of prey body size
-const MEAT_ENERGY_CAP = 1.5;
+const ATTACK_COST = 0.025; // energy per strike, hit or miss
+const STRUGGLE_INJURY = 0.05; // attacker health lost * (preySize/predSize) on a miss
+const MEAT_ENERGY_K = 1.0; // energy per unit of prey body size
+const MEAT_ENERGY_CAP = 1.7;
 
 const FOOD_RADIUS = 0.35;
 const FOOD_BASE_CAPACITY = 135; // * richness * climate -> plant carrying capacity
@@ -148,11 +168,11 @@ export function isPredator(g: Genome): boolean {
 }
 
 /**
- * Trade-off: actual movement speed falls with body size, so a big body must
- * be paid for with predation power rather than raw pace.
+ * Trade-off: actual movement speed falls with body size and armor weight, so
+ * a big or plated body must be paid for with staying power, not raw pace.
  */
 function effectiveSpeed(g: Genome): number {
-  return g.speed / Math.sqrt(g.size);
+  return (g.speed / Math.sqrt(g.size)) * (1 - ARMOR_SPEED_PENALTY * g.armor);
 }
 
 function hueDistance(a: number, b: number): number {
@@ -168,6 +188,11 @@ function randomGenome(rng: () => number, allowPredator: boolean): Genome {
     speed: predator ? lerp(1.8, 3.0) : lerp(0.9, 2.4),
     sense: predator ? lerp(4, 9) : lerp(GENE_BOUNDS.sense[0], 8),
     diet: predator ? lerp(0.6, 0.85) : lerp(0, 0.18),
+    armor: predator ? lerp(0, 0.15) : lerp(0.02, 0.3),
+    social: predator ? lerp(0.3, 0.8) : lerp(0, 0.6),
+    // Hunters start as K-strategists: few, well-provisioned young. A hungry
+    // newborn that must catch prey cannot afford to start weak.
+    fecundity: predator ? lerp(0.1, 0.4) : lerp(0.25, 0.7),
     hue: predator ? lerp(0, 30) : lerp(90, 210),
   };
 }
@@ -181,11 +206,15 @@ function mutate(g: Genome, rng: () => number): Genome {
   // makes a larger jump so carnivory keeps re-seeding from herbivore stock and
   // the predator niche recovers after a crash instead of vanishing for good.
   const dietStep = rng() < DIET_INNOVATION_CHANCE ? DIET_INNOVATION_STEP : DIET_MUTATION;
+  const unit = (v: number) => clamp(v + gaussian(rng) * UNIT_GENE_MUTATION, 0, 1);
   return {
     size: jitter(g.size, GENE_BOUNDS.size[0], GENE_BOUNDS.size[1]),
     speed: jitter(g.speed, GENE_BOUNDS.speed[0], GENE_BOUNDS.speed[1]),
     sense: jitter(g.sense, GENE_BOUNDS.sense[0], GENE_BOUNDS.sense[1]),
     diet: clamp(g.diet + gaussian(rng) * dietStep, 0, 1),
+    armor: unit(g.armor),
+    social: unit(g.social),
+    fecundity: unit(g.fecundity),
     hue,
   };
 }
@@ -199,6 +228,9 @@ function crossover(a: Genome, b: Genome, rng: () => number): Genome {
       speed: pick(a.speed, b.speed),
       sense: pick(a.sense, b.sense),
       diet: pick(a.diet, b.diet),
+      armor: pick(a.armor, b.armor),
+      social: pick(a.social, b.social),
+      fecundity: pick(a.fecundity, b.fecundity),
       hue: pick(a.hue, b.hue),
     },
     rng,
@@ -354,6 +386,7 @@ export class RegionEcosystem {
         BASE_METABOLISM +
         moveCost +
         climateStress +
+        ARMOR_COST * g.armor * g.size +
         SENSE_COST * g.sense * g.sense +
         (pred ? PREDATOR_UPKEEP : 0);
       c.energy -= cost * dt;
@@ -388,7 +421,7 @@ export class RegionEcosystem {
           // populations from dead-ending while still favouring pair mating.
           c.energy -= ASEX_COST;
           c.matingCd = REPRO_COOLDOWN;
-          this.birth(mutate(c.genome, this.rng), c.generation + 1, c, newborns);
+          this.birth(mutate(c.genome, this.rng), c.generation + 1, c, CHILD_ENERGY_MAX, newborns);
         }
       }
 
@@ -456,20 +489,37 @@ export class RegionEcosystem {
     a.matingCd = REPRO_COOLDOWN;
     b.matingCd = REPRO_COOLDOWN;
     const gen = Math.max(a.generation, b.generation) + 1;
-    const litter = 1 + (this.rng() < LITTER_SECOND_CHILD_CHANCE ? 1 : 0);
+    // r/K trade-off: fecund pairs bear more young, but the birth pool is
+    // fixed, so each child starts weaker.
+    const fecundity = (a.genome.fecundity + b.genome.fecundity) / 2;
+    let litter = 1;
+    if (this.rng() < fecundity * 0.9) litter++;
+    if (this.rng() < fecundity * 0.55) litter++;
+    if (litter > MAX_LITTER) litter = MAX_LITTER;
+    const childEnergy = clamp(
+      (BIRTH_POOL / litter) * 0.62,
+      CHILD_ENERGY_MIN,
+      CHILD_ENERGY_MAX,
+    );
     for (let i = 0; i < litter; i++) {
-      this.birth(crossover(a.genome, b.genome, this.rng), gen, a, newborns);
+      this.birth(crossover(a.genome, b.genome, this.rng), gen, a, childEnergy, newborns);
     }
   }
 
-  private birth(genome: Genome, gen: number, near: Creature, newborns: Creature[]): void {
+  private birth(
+    genome: Genome,
+    gen: number,
+    near: Creature,
+    energy: number,
+    newborns: Creature[],
+  ): void {
     if (gen > this.generation) this.generation = gen;
     this.births++;
     newborns.push(
       this.spawn(
         genome,
         gen,
-        CHILD_ENERGY,
+        energy,
         near.speciesId,
         clamp(near.x + (this.rng() - 0.5) * 2, 0, this.size),
         clamp(near.y + (this.rng() - 0.5) * 2, 0, this.size),
@@ -488,16 +538,27 @@ export class RegionEcosystem {
     }
   }
 
+  /** Pack hunting: hunting with packmates lets a predator attempt bigger prey. */
+  private maxPreySize(c: Creature, packmates: number): number {
+    return (
+      c.genome.size *
+      PREY_MAX_RATIO *
+      (1 + PACK_PREY_RATIO * c.genome.social * Math.min(3, packmates))
+    );
+  }
+
   private nearestPrey(c: Creature, list: Creature[]): Creature | null {
     const senseR2 = c.genome.sense * c.genome.sense;
     // Hunters pick targets they can realistically run down; anything faster
     // than their sprint is not worth chasing.
     const maxPreySpeed = effectiveSpeed(c.genome) * PREDATOR_SPRINT;
+    const pack = this.groupmates(c, list, c.x, c.y, PACK_RADIUS);
+    const sizeLimit = this.maxPreySize(c, pack);
     let best: Creature | null = null;
     let bestD2 = senseR2;
     for (const o of list) {
       if (o === c || o.dead || isPredator(o.genome)) continue;
-      if (o.genome.size > c.genome.size * PREY_MAX_RATIO) continue;
+      if (o.genome.size > sizeLimit) continue;
       if (effectiveSpeed(o.genome) > maxPreySpeed) continue;
       const dx = o.x - c.x;
       const dy = o.y - c.y;
@@ -545,6 +606,49 @@ export class RegionEcosystem {
     return best;
   }
 
+  /** Same-species neighbours of the same trophic type within `radius` of (x, y). */
+  private groupmates(c: Creature, list: Creature[], x: number, y: number, radius: number): number {
+    const pred = isPredator(c.genome);
+    const r2 = radius * radius;
+    let n = 0;
+    for (const o of list) {
+      if (o === c || o.dead || o.migrated) continue;
+      if (o.speciesId !== c.speciesId || isPredator(o.genome) !== pred) continue;
+      const dx = o.x - x;
+      const dy = o.y - y;
+      if (dx * dx + dy * dy <= r2) n++;
+    }
+    return n;
+  }
+
+  /** Nudge heading toward the local centroid of same-species groupmates. */
+  private steerCohesion(c: Creature, list: Creature[], dt: number): void {
+    if (c.genome.social < 0.15) return;
+    const pred = isPredator(c.genome);
+    const r2 = c.genome.sense * c.genome.sense;
+    let sx = 0;
+    let sy = 0;
+    let n = 0;
+    for (const o of list) {
+      if (o === c || o.dead || o.migrated) continue;
+      if (o.speciesId !== c.speciesId || isPredator(o.genome) !== pred) continue;
+      const dx = o.x - c.x;
+      const dy = o.y - c.y;
+      if (dx * dx + dy * dy <= r2) {
+        sx += o.x;
+        sy += o.y;
+        n++;
+      }
+    }
+    if (n === 0) return;
+    const target = Math.atan2(sy / n - c.y, sx / n - c.x);
+    let diff = target - c.heading;
+    while (diff > Math.PI) diff -= Math.PI * 2;
+    while (diff < -Math.PI) diff += Math.PI * 2;
+    const maxTurn = COHESION_TURN * c.genome.social * dt;
+    c.heading += clamp(diff, -maxTurn, maxTurn);
+  }
+
   private steerToward(c: Creature, tx: number, ty: number, dt: number): void {
     const target = Math.atan2(ty - c.y, tx - c.x);
     let diff = target - c.heading;
@@ -572,6 +676,8 @@ export class RegionEcosystem {
         this.steerToward(c, prey.x, prey.y, dt);
         return;
       }
+      // No target: social hunters regroup with the pack.
+      this.steerCohesion(c, list, dt);
     } else {
       const threat = this.nearestPredator(c, list);
       if (threat) {
@@ -589,8 +695,11 @@ export class RegionEcosystem {
       if (fi >= 0) {
         const f = this.food[fi]!;
         this.steerToward(c, f.x, f.y, dt);
+        // Grazers drift toward the herd even while feeding.
+        this.steerCohesion(c, list, dt);
         return;
       }
+      this.steerCohesion(c, list, dt);
     }
     c.heading += (this.rng() - 0.5) * TURN_JITTER * dt;
   }
@@ -652,11 +761,13 @@ export class RegionEcosystem {
     // on the size ratio — big predators bring down big prey, while relatively
     // big prey usually win the struggle, escape, and can injure the attacker.
     if (diet > 0.05 && c.attackCd <= 0) {
+      const pack = this.groupmates(c, list, c.x, c.y, PACK_RADIUS);
+      const sizeLimit = this.maxPreySize(c, pack);
       let target: Creature | null = null;
       let bestD2 = Infinity;
       for (const o of list) {
         if (o === c || o.dead || isPredator(o.genome)) continue;
-        if (o.genome.size > c.genome.size * PREY_MAX_RATIO) continue;
+        if (o.genome.size > sizeLimit) continue;
         const dx = o.x - c.x;
         const dy = o.y - c.y;
         const contact = c.genome.size + o.genome.size + CATCH_REACH;
@@ -671,23 +782,49 @@ export class RegionEcosystem {
         c.energy -= ATTACK_COST;
         if (c.energy < 0) c.energy = 0;
         const ratio = c.genome.size / (target.genome.size * 1.15);
-        const chance = clamp(
+        let chance = clamp(
           CATCH_BASE_CHANCE * Math.pow(ratio, 2.5),
           CATCH_MIN_CHANCE,
           CATCH_MAX_CHANCE,
         );
+        // Plating blocks; herds confuse; packs overwhelm.
+        chance *= 1 - ARMOR_DEFENSE * target.genome.armor;
+        const herd = this.groupmates(target, list, target.x, target.y, HERD_RADIUS);
+        chance *= 1 - Math.min(0.4, HERD_DEFENSE * target.genome.social * herd);
+        chance *= 1 + PACK_BONUS * c.genome.social * Math.min(4, pack);
+        chance = clamp(chance, 0.02, 0.97);
+
         if (this.rng() < chance) {
-          const gain = Math.min(
+          const raw = Math.min(
             MEAT_ENERGY_CAP,
             MEAT_ENERGY_K * target.genome.size + 0.5 * target.energy,
-          ) * diet;
-          c.energy += gain;
+          );
           target.dead = true;
           target.energy = 0;
           this.deaths++;
+          if (pack > 0 && c.genome.social > 0.2) {
+            // Pack kill: the striker feeds first, packmates share the rest.
+            c.energy += raw * (1 - KILL_SHARE) * diet;
+            const share = (raw * KILL_SHARE) / pack;
+            const pr2 = PACK_RADIUS * PACK_RADIUS;
+            for (const o of list) {
+              if (o === c || o.dead || o.migrated) continue;
+              if (o.speciesId !== c.speciesId || !isPredator(o.genome)) continue;
+              const dx = o.x - c.x;
+              const dy = o.y - c.y;
+              if (dx * dx + dy * dy <= pr2) {
+                o.energy = Math.min(MAX_ENERGY, o.energy + share * o.genome.diet);
+              }
+            }
+          } else {
+            c.energy += raw * diet;
+          }
         } else {
-          // The prey fights free: the bigger it is, the worse for the attacker.
-          c.health -= STRUGGLE_INJURY * (target.genome.size / c.genome.size);
+          // The prey fights free: big and armored prey punish the attacker.
+          c.health -=
+            STRUGGLE_INJURY *
+            (target.genome.size / c.genome.size) *
+            (1 + ARMOR_SPIKE * target.genome.armor);
           target.heading = Math.atan2(target.y - c.y, target.x - c.x);
         }
       }
@@ -711,6 +848,9 @@ export class RegionEcosystem {
         effSpeed: effectiveSpeed(c.genome),
         sense: c.genome.sense,
         diet: c.genome.diet,
+        armor: c.genome.armor,
+        social: c.genome.social,
+        fecundity: c.genome.fecundity,
         age: c.age,
         generation: c.generation,
         mature: c.age >= MATURITY_AGE,
@@ -740,6 +880,9 @@ export class RegionEcosystem {
         meanSpeed: 0,
         meanSense: 0,
         meanHealth: 0,
+        meanArmor: 0,
+        meanSocial: 0,
+        meanFecundity: 0,
         carnivoreFraction: 0,
         births: this.births,
         deaths: this.deaths,
@@ -749,6 +892,9 @@ export class RegionEcosystem {
     let sp = 0;
     let se = 0;
     let hp = 0;
+    let ar = 0;
+    let so = 0;
+    let fe = 0;
     let carn = 0;
     const speciesSeen = new Set<number>();
     for (const c of this.creatures) {
@@ -756,6 +902,9 @@ export class RegionEcosystem {
       sp += c.genome.speed;
       se += c.genome.sense;
       hp += c.health;
+      ar += c.genome.armor;
+      so += c.genome.social;
+      fe += c.genome.fecundity;
       speciesSeen.add(c.speciesId);
       if (isPredator(c.genome)) carn++;
     }
@@ -767,6 +916,9 @@ export class RegionEcosystem {
       meanSpeed: sp / n,
       meanSense: se / n,
       meanHealth: hp / n,
+      meanArmor: ar / n,
+      meanSocial: so / n,
+      meanFecundity: fe / n,
       carnivoreFraction: carn / n,
       births: this.births,
       deaths: this.deaths,

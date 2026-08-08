@@ -89,6 +89,12 @@ export type Genome = {
   sense: number;
   /** Trophic tendency: 0 = pure herbivore (plants), 1 = pure carnivore (prey). */
   diet: number;
+  /** 0–1 plating: blocks and punishes attacks, but is heavy and costly. */
+  armor: number;
+  /** 0–1 group instinct: herbivores herd for safety, carnivores hunt in packs. */
+  social: number;
+  /** 0–1 r/K strategy: bigger litters of weaker young vs few sturdy young. */
+  fecundity: number;
   /** Lineage colour in degrees (0–360); mutates slowly to visualise descent. */
   hue: number;
 };
@@ -114,6 +120,12 @@ export type CreatureView = {
   sense: number;
   /** 0–1 trophic tendency (see Genome.diet). */
   diet: number;
+  /** 0–1 plating (see Genome.armor). */
+  armor: number;
+  /** 0–1 group instinct (see Genome.social). */
+  social: number;
+  /** 0–1 r/K strategy (see Genome.fecundity). */
+  fecundity: number;
   /** Age in simulated seconds. */
   age: number;
   generation: number;
@@ -138,6 +150,9 @@ export type ArenaStats = {
   meanSpeed: number;
   meanSense: number;
   meanHealth: number;
+  meanArmor: number;
+  meanSocial: number;
+  meanFecundity: number;
   /** Fraction of the population that behaves as predators (diet >= 0.5). */
   carnivoreFraction: number;
   births: number;
