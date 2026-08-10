@@ -81,6 +81,7 @@ Or use the workspace scripts in `package.json` to run web and Electron together.
 9. **Phylogeny** shows every significant species as a lifespan bar (founding → extinction), colour-coded by lineage, with connectors to the parent species it split from. Carnivorous lineages carry a red dot. Species get procedural names (herbivores like *Ryntaella*, carnivores like *Vilodon*).
 10. **A connected world**: each region's side borders lead to its neighbours — crossing is chancy and costs energy, but species genuinely migrate, invade, and spread around the ring. The globe's outer **climate ring** shows each region's temperature (frozen blue → scorching red); regions have biomes (tundra, boreal forest, steppe, temperate forest, jungle, desert) with real metabolic effects — cold punishes small bodies, heat punishes large ones, and climate extremes grow less food.
 11. **Save / New world** — **Save** writes the current world to browser storage (brief “Saved ✓” feedback). The world **autosaves every 30 seconds** and **reloads automatically** on refresh. **New world** clears storage and starts a fresh simulation with a new seed.
+12. **World events** — random **droughts** (wither plants, slow regrowth), **disease** (spreads among neighbours, drains health; purple rings on sick blobs), and **storms** (sudden deaths + climate stress). Active events show as coloured dots on the globe (gold = drought, purple = disease, cyan = storm) and in the region hint line.
 
 ## Architecture (web)
 
@@ -139,6 +140,7 @@ Watch mode (package only): `npm run test -w @evo-world-sim/core -- --watch`
 | Spatial hashing (neighbour queries) | Working |
 | Web worker (sim off main thread) | Working |
 | Save / load (localStorage + core snapshots) | Working |
+| World events (drought, disease, storm) | Working prototype |
 | Full 2D world map (WorldBox-style) | Planned |
 | World events (droughts, disease, disasters) | Planned |
 

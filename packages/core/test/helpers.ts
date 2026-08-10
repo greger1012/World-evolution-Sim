@@ -51,6 +51,7 @@ export function worldFingerprint(sim: EvolutionSimulation): string {
         c.armor.toFixed(6),
         c.social.toFixed(6),
         c.fecundity.toFixed(6),
+        c.infection.toFixed(6),
       ].join(","),
     );
   }

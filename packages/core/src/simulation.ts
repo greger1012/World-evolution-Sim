@@ -1,5 +1,7 @@
 import { RegionEcosystem } from "./creatures.js";
 import type { Creature, EcosystemState } from "./creatures.js";
+import { EventScheduler } from "./events.js";
+import type { EventSchedulerState } from "./events.js";
 import { biomeName, regionRichness, regionSeed, regionTemperature } from "./globe.js";
 import { SpeciesRegistry } from "./species.js";
 import type { SpeciesRegistryState } from "./species.js";
@@ -28,6 +30,7 @@ export type SavedWorld = {
   history: HistorySample[];
   ecosystems: EcosystemState[];
   species: SpeciesRegistryState;
+  events?: EventSchedulerState;
 };
 
 const REGISTRY_REFRESH_INTERVAL = 1; // sim-seconds between species refreshes
@@ -39,6 +42,7 @@ export class EvolutionSimulation {
   private readonly baseSeed: number;
   private readonly ecosystems: RegionEcosystem[];
   private readonly registry: SpeciesRegistry;
+  private events: EventScheduler;
   private idCounter = 1;
   private tick = 0;
   private simTime = 0;
@@ -69,6 +73,7 @@ export class EvolutionSimulation {
     }
     this.registry = new SpeciesRegistry(baseSeed);
     this.registry.refresh(this.allCreatures(), 0);
+    this.events = new EventScheduler(baseSeed);
     this.sampleHistory();
   }
 
@@ -128,6 +133,7 @@ export class EvolutionSimulation {
       })),
       ecosystems: this.ecosystems.map((e) => e.serializeState()),
       species: this.registry.serializeState(),
+      events: this.events.serializeState(),
     };
   }
 
@@ -152,6 +158,7 @@ export class EvolutionSimulation {
       sim.ecosystems[i]!.restoreState(saved.ecosystems[i]!);
     }
     sim.registry.restoreState(saved.species);
+    sim.events = new EventScheduler(saved.seed, saved.events);
     return sim;
   }
 
@@ -202,6 +209,7 @@ export class EvolutionSimulation {
         carnivores: eco.carnivoreCount,
         temperature: eco.temperature,
         biome: biomeName(eco.temperature, eco.richness),
+        events: this.events.regionEvents(i, this.simTime),
       };
       total += biomass;
       divSum += diversity;
@@ -253,7 +261,12 @@ export class EvolutionSimulation {
 
     const n = this.ecosystems.length;
     for (let s = 0; s < steps; s++) {
-      for (let i = 0; i < n; i++) this.ecosystems[i]!.step(h);
+      const t = this.simTime + s * h;
+      this.events.advance(t, h, n, this.ecosystems);
+      for (let i = 0; i < n; i++) {
+        const mods = this.events.modifiersFor(i, t);
+        this.ecosystems[i]!.step(h, mods);
+      }
       // Route border-crossers to the neighbouring region (ring topology).
       for (let i = 0; i < n; i++) {
         const out = this.ecosystems[i]!.takeEmigrants();

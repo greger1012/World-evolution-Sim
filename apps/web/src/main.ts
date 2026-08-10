@@ -299,6 +299,26 @@ function drawGlobe(v: ReadonlySimulationView): void {
     ctx.fill();
   }
 
+  // Event markers on regions with active drought, disease, or storms.
+  for (let i = 0; i < n; i++) {
+    const reg = v.regions[i]!;
+    if (reg.events.length === 0) continue;
+    const mid = ((i + 0.5) / n) * Math.PI * 2 - Math.PI / 2;
+    const mr = R * 0.68;
+    const px = cx + Math.cos(mid) * mr;
+    const py = cy + Math.sin(mid) * mr;
+    let offset = 0;
+    for (const ev of reg.events) {
+      if (ev.kind === "drought") ctx.fillStyle = "#d4a24a";
+      else if (ev.kind === "disease") ctx.fillStyle = "#b06cff";
+      else ctx.fillStyle = "#8ee7ff";
+      ctx.beginPath();
+      ctx.arc(px + offset, py, 3.5, 0, Math.PI * 2);
+      ctx.fill();
+      offset += 7;
+    }
+  }
+
   // Highlight the active region wedge.
   if (v.activeRegionId !== null) {
     const i = v.activeRegionId;
@@ -408,6 +428,14 @@ function drawArena(v: ReadonlySimulationView): void {
       ctx.lineWidth = 1;
     }
     ctx.stroke();
+    // Infected creatures show a sickly purple ring.
+    if (c.infection > 0.12) {
+      ctx.strokeStyle = `rgba(176,108,255,${0.35 + c.infection * 0.55})`;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(px, py, r + 2, 0, Math.PI * 2);
+      ctx.stroke();
+    }
     // Heavily plated creatures show a steel ring inside the body.
     if (c.armor > 0.35 && r > 3) {
       ctx.strokeStyle = "rgba(200,210,225,0.75)";
@@ -471,6 +499,7 @@ function drawArenaOverlay(
         generation: number;
         mature: boolean;
         readyToMate: boolean;
+        infection: number;
       }
     | null,
 ): void {
@@ -510,6 +539,9 @@ function drawArenaOverlay(
     ["species", speciesName],
     ["diet", `${dietLabel(selected.diet)} (${selected.diet.toFixed(2)})`],
     ["health", selected.health.toFixed(2)],
+    ...(selected.infection > 0.05
+      ? [["infection", selected.infection.toFixed(2)] as [string, string]]
+      : []),
     ["energy", selected.energy.toFixed(2)],
     ["size", selected.radius.toFixed(2)],
     ["speed", `${selected.speed.toFixed(2)} (eff ${selected.effSpeed.toFixed(2)})`],
@@ -765,7 +797,11 @@ globeCanvas.addEventListener("click", (e) => {
   const climate = reg
     ? ` · ${reg.biome} (${reg.temperature < 0.3 ? "cold" : reg.temperature > 0.65 ? "hot" : "mild"})`
     : "";
-  patchHint.textContent = `Region ${id}${climate} — click a blob to inspect it`;
+  const eventHint =
+    reg && reg.events.length > 0
+      ? ` · ${reg.events.map((e) => e.kind).join(", ")} active`
+      : "";
+  patchHint.textContent = `Region ${id}${climate}${eventHint} — click a blob to inspect it`;
 });
 
 patchCanvas.addEventListener("click", (e) => {

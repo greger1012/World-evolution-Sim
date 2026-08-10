@@ -1,3 +1,5 @@
+export { EventScheduler } from "./events.js";
+export type { EventKind, EventSchedulerState, RegionModifiers } from "./events.js";
 export { defaultSimulationConfig, speedPresets } from "./config.js";
 export { EvolutionSimulation } from "./simulation.js";
 export type { SavedWorld } from "./simulation.js";
@@ -21,6 +23,7 @@ export type {
   HistorySample,
   ReadonlySimulationView,
   RegionState,
+  RegionEventState,
   SimulationConfig,
   SpeciesRecord,
   TimeControls,

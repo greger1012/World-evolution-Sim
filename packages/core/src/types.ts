@@ -36,6 +36,15 @@ export type HistorySample = {
   populations: [number, number][];
 };
 
+/** Snapshot of an active regional world event for the globe UI. */
+export type RegionEventState = {
+  kind: "drought" | "disease" | "storm";
+  /** 0–1 intensity. */
+  severity: number;
+  /** Sim-seconds until the event ends. */
+  remaining: number;
+};
+
 export type RegionState = {
   id: number;
   /** 0–1 normalized ecosystem health (population relative to carrying capacity). */
@@ -50,6 +59,8 @@ export type RegionState = {
   temperature: number;
   /** Human-readable biome (from temperature + richness). */
   biome: string;
+  /** Ongoing droughts, outbreaks, or storms in this region. */
+  events: readonly RegionEventState[];
 };
 
 export type TimeControls = {
@@ -133,6 +144,8 @@ export type CreatureView = {
   mature: boolean;
   /** Mature, well fed, healthy, and off cooldown. */
   readyToMate: boolean;
+  /** 0–1 infection load; visible when diseased. */
+  infection: number;
 };
 
 export type FoodView = {

@@ -1,4 +1,6 @@
 import { climateFoodFactor } from "./globe.js";
+import type { RegionModifiers } from "./events.js";
+import { DEFAULT_REGION_MODIFIERS } from "./events.js";
 import { SpatialGrid } from "./spatial.js";
 import type {
   ArenaStats,
@@ -151,6 +153,12 @@ const HEAT_STRESS = 0.06; // energy/sec * heat * size
 const MIGRATION_CHANCE = 0.07;
 const MIGRATION_COST = 0.06;
 
+// Disease: spreads among neighbours; drains health until cured or death.
+const INFECTION_SPREAD_RADIUS = 2.8;
+const INFECTION_SPREAD_RATE = 0.55;
+const DISEASE_HEALTH_RATE = 0.38;
+const INFECTION_DECAY = 0.04;
+
 export type Creature = {
   id: number;
   /** Species tag; inherited from parents, -1 until the registry assigns one. */
@@ -170,6 +178,8 @@ export type Creature = {
   matingCd: number;
   /** Time until a predator may strike again. */
   attackCd: number;
+  /** 0–1 infection load from regional disease outbreaks. */
+  infection: number;
 };
 
 /** A creature leaving a region: direction is -1 (left/previous) or +1 (right/next). */
@@ -322,7 +332,7 @@ export class RegionEcosystem {
     this.creatureGrid = new SpatialGrid<Creature>(opts.size, GRID_CELL, GRID_SLACK);
     this.foodGrid = new SpatialGrid<Food>(opts.size, GRID_CELL, GRID_SLACK);
 
-    const capacity = this.foodCapacity();
+    const capacity = this.foodCapacity(DEFAULT_REGION_MODIFIERS);
     const startFood = Math.floor(capacity * 0.85);
     for (let i = 0; i < startFood; i++) this.food.push(this.randomPoint());
     this.foodGrid.rebuild(this.food);
@@ -355,14 +365,51 @@ export class RegionEcosystem {
       migrated: false,
       matingCd: 1.5,
       attackCd: 0,
+      infection: 0,
     };
   }
 
-  private foodCapacity(): number {
-    return Math.max(
+  /** Storm hits: sudden deaths and plant loss. */
+  applyStormStart(severity: number): void {
+    const killFrac = 0.12 + severity * 0.28;
+    for (const c of this.creatures) {
+      if (c.dead) continue;
+      if (this.rng() < killFrac) {
+        c.dead = true;
+        this.deaths++;
+      }
+    }
+    const foodKill = 0.18 + severity * 0.35;
+    for (const f of this.food) {
+      if (!f.dead && this.rng() < foodKill) f.dead = true;
+    }
+  }
+
+  /** Disease outbreak: seed carriers in the population. */
+  seedDiseaseOutbreak(severity: number): void {
+    const chance = 0.1 + severity * 0.22;
+    for (const c of this.creatures) {
+      if (c.dead || c.infection > 0.05) continue;
+      if (this.rng() < chance) {
+        c.infection = 0.35 + this.rng() * severity * 0.55;
+      }
+    }
+  }
+
+  /** Drought begins: wither a chunk of standing plants. */
+  applyDroughtStart(severity: number): void {
+    const wilt = 0.22 + severity * 0.38;
+    for (const f of this.food) {
+      if (!f.dead && this.rng() < wilt) f.dead = true;
+    }
+  }
+
+  private foodCapacity(mods: RegionModifiers): number {
+    const base = Math.max(
       6,
       Math.floor(FOOD_BASE_CAPACITY * this.richness * climateFoodFactor(this.temperature)),
     );
+    return Math.max(3, Math.floor(base * mods.foodCapacityMul));
   }
 
   /** Creatures that crossed a border this step; caller routes them onward. */
@@ -410,7 +457,11 @@ export class RegionEcosystem {
       generation: this.generation,
       births: this.births,
       deaths: this.deaths,
-      creatures: this.creatures.map((c) => ({ ...c, genome: { ...c.genome } })),
+      creatures: this.creatures.map((c) => ({
+        ...c,
+        genome: { ...c.genome },
+        infection: c.infection ?? 0,
+      })),
       food: this.food.filter((f) => !f.dead).map((f) => ({ x: f.x, y: f.y })),
     };
   }
@@ -422,23 +473,29 @@ export class RegionEcosystem {
     this.generation = s.generation;
     this.births = s.births;
     this.deaths = s.deaths;
-    this.creatures = s.creatures.map((c) => ({ ...c, genome: { ...c.genome } }));
+    this.creatures = s.creatures.map((c) => ({
+      ...c,
+      genome: { ...c.genome },
+      infection: c.infection ?? 0,
+    }));
     this.food = s.food.map((f) => ({ x: f.x, y: f.y, dead: false }));
     this.emigrants = [];
     this.foodGrid.rebuild(this.food);
   }
 
-  step(dt: number): void {
+  step(dt: number, mods: RegionModifiers = DEFAULT_REGION_MODIFIERS): void {
     if (dt <= 0) return;
     // Compact food eaten last step and regrow; new food is inserted into the
     // grid as it spawns, with an occasional rebuild to purge dead references.
     this.food = this.food.filter((f) => !f.dead);
-    this.growFood(dt);
+    this.growFood(dt, mods);
     if (--this.foodPurgeCountdown <= 0) {
       this.foodGrid.rebuild(this.food);
       this.foodPurgeCountdown = 64;
     }
     if (this.creatures.length > GRID_MIN_ITEMS) this.creatureGrid.rebuild(this.creatures);
+
+    if (mods.diseaseActive) this.spreadInfection(dt, mods.diseaseSeverity);
 
     const list = this.creatures;
     const newborns: Creature[] = [];
@@ -458,7 +515,8 @@ export class RegionEcosystem {
       const cold = Math.max(0, COLD_THRESHOLD - this.temperature);
       const heat = Math.max(0, this.temperature - HEAT_THRESHOLD);
       const climateStress =
-        (COLD_STRESS * cold) / g.size + HEAT_STRESS * heat * g.size;
+        mods.climateStressMul *
+        ((COLD_STRESS * cold) / g.size + HEAT_STRESS * heat * g.size);
       const cost =
         BASE_METABOLISM +
         moveCost +
@@ -480,6 +538,12 @@ export class RegionEcosystem {
         c.health -= STARVE_HEALTH_RATE * dt;
       } else if (c.energy > REGEN_ENERGY && c.health < maxH) {
         c.health = Math.min(maxH, c.health + REGEN_HEALTH_RATE * dt);
+      }
+      if (c.infection > 0) {
+        c.health -= DISEASE_HEALTH_RATE * c.infection * dt;
+        if (!mods.diseaseActive) {
+          c.infection = Math.max(0, c.infection - INFECTION_DECAY * dt);
+        }
       }
       if (c.health > maxH) c.health = maxH;
 
@@ -607,11 +671,27 @@ export class RegionEcosystem {
     );
   }
 
-  private growFood(dt: number): void {
-    const capacity = this.foodCapacity();
+  private spreadInfection(dt: number, severity: number): void {
+    const r2 = INFECTION_SPREAD_RADIUS * INFECTION_SPREAD_RADIUS;
+    for (const c of this.creatures) {
+      if (c.dead || c.infection < 0.08) continue;
+      for (const o of this.candidatesNear(c.x, c.y, INFECTION_SPREAD_RADIUS)) {
+        if (o === c || o.dead || o.migrated || o.infection > 0.12) continue;
+        const dx = o.x - c.x;
+        const dy = o.y - c.y;
+        if (dx * dx + dy * dy > r2) continue;
+        if (this.rng() < INFECTION_SPREAD_RATE * severity * dt * c.infection) {
+          o.infection = 0.32 + this.rng() * severity * 0.5;
+        }
+      }
+    }
+  }
+
+  private growFood(dt: number, mods: RegionModifiers): void {
+    const capacity = this.foodCapacity(mods);
     const deficit = capacity - this.food.length;
     if (deficit <= 0) return;
-    let expected = deficit * FOOD_REGROW * dt;
+    let expected = deficit * FOOD_REGROW * mods.foodRegrowMul * dt;
     while (expected > 0) {
       if (expected >= 1 || this.rng() < expected) {
         const f = this.randomPoint();
@@ -958,6 +1038,7 @@ export class RegionEcosystem {
         generation: c.generation,
         mature: c.age >= MATURITY_AGE,
         readyToMate: this.readyToMate(c),
+        infection: clamp(c.infection, 0, 1),
       };
     }
     return out;
