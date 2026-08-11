@@ -116,6 +116,7 @@ Tests live in `packages/core/test/` and cover:
 - **Ecosystem** — food regrowth, predator sustainability, migration, trait trade-offs
 - **Species** — naming, splits, extinctions, phylogeny inputs
 - **Save / load** — serialize → restore round-trip and JSON storage fidelity
+- **World events** — drought, disease, storm scheduling and effects
 
 Watch mode (package only): `npm run test -w @evo-world-sim/core -- --watch`
 
@@ -142,7 +143,6 @@ Watch mode (package only): `npm run test -w @evo-world-sim/core -- --watch`
 | Save / load (localStorage + core snapshots) | Working |
 | World events (drought, disease, storm) | Working prototype |
 | Full 2D world map (WorldBox-style) | Planned |
-| World events (droughts, disease, disasters) | Planned |
 
 Feedback and contributions can wait until the core evolution model is further along; the public surface will keep changing.
 

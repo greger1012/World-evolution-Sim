@@ -1,12 +1,21 @@
 import "./style.css";
-import { speedPresets } from "@evo-world-sim/core";
+import { generateWorldMap, speedPresets } from "@evo-world-sim/core";
 import type {
   ArenaStats,
   HistorySample,
   ReadonlySimulationView,
   SavedWorld,
   SpeciesRecord,
+  WorldMapData,
 } from "@evo-world-sim/core";
+import {
+  chunkHintText,
+  defaultMapCamera,
+  drawWorldMap,
+  mapTileAtScreen,
+  terrainAtCursor,
+  type MapCamera,
+} from "./map-view.js";
 import type { MainToWorker, WorkerToMain } from "./protocol.js";
 
 const SAVE_KEY = "evo-world-sim-save-v1";
@@ -61,7 +70,11 @@ function loadSavedWorld(): SavedWorld | null {
   }
 }
 
-send({ type: "init", seed: 1337, saved: loadSavedWorld() });
+const savedOnLoad = loadSavedWorld();
+const worldSeed = savedOnLoad?.seed ?? 1337;
+let worldMap: WorldMapData = generateWorldMap(worldSeed);
+
+send({ type: "init", seed: worldSeed, saved: savedOnLoad });
 
 // Autosave: the world quietly persists so a refresh never loses it.
 setInterval(() => send({ type: "save", reason: "auto" }), 30_000);
@@ -79,22 +92,22 @@ app.innerHTML = `
         <select id="speed"></select>
       </label>
       <button type="button" id="pause">Pause</button>
-      <button type="button" id="globe" class="active" disabled>Globe</button>
+      <button type="button" id="overview" class="active" disabled>Overview</button>
       <button type="button" id="save" title="Save this world in the browser">Save</button>
       <button type="button" id="new" title="Start a fresh world">New world</button>
     </div>
   </header>
   <main>
     <section class="panel">
-      <header><h2>Stratified globe</h2></header>
-      <p class="hint">Click a region to open its living arena.</p>
+      <header><h2>World map</h2></header>
+      <p class="hint" id="map-hint">Procedural geography — pan, zoom, click land to open a regional arena.</p>
       <div class="canvas-wrap">
-        <canvas id="globe-canvas" width="600" height="400" aria-label="Globe regions"></canvas>
+        <canvas id="map-canvas" width="600" height="400" aria-label="World map"></canvas>
       </div>
     </section>
     <section class="panel">
       <header><h2>Regional arena</h2></header>
-      <p class="hint" id="patch-hint">Globe view — select a region to watch its creatures evolve.</p>
+      <p class="hint" id="patch-hint">Map overview — click land on the world map to watch creatures evolve.</p>
       <div class="canvas-wrap">
         <canvas id="patch-canvas" width="600" height="400" aria-label="Regional arena"></canvas>
       </div>
@@ -119,11 +132,12 @@ app.innerHTML = `
 const statsEl = document.querySelector<HTMLDivElement>("#stats")!;
 const speedSel = document.querySelector<HTMLSelectElement>("#speed")!;
 const pauseBtn = document.querySelector<HTMLButtonElement>("#pause")!;
-const globeBtn = document.querySelector<HTMLButtonElement>("#globe")!;
+const overviewBtn = document.querySelector<HTMLButtonElement>("#overview")!;
 const saveBtn = document.querySelector<HTMLButtonElement>("#save")!;
 const newBtn = document.querySelector<HTMLButtonElement>("#new")!;
+const mapHint = document.querySelector<HTMLParagraphElement>("#map-hint")!;
 const patchHint = document.querySelector<HTMLParagraphElement>("#patch-hint")!;
-const globeCanvas = document.querySelector<HTMLCanvasElement>("#globe-canvas")!;
+const mapCanvas = document.querySelector<HTMLCanvasElement>("#map-canvas")!;
 const patchCanvas = document.querySelector<HTMLCanvasElement>("#patch-canvas")!;
 const historyCanvas = document.querySelector<HTMLCanvasElement>("#history-canvas")!;
 const phyloCanvas = document.querySelector<HTMLCanvasElement>("#phylo-canvas")!;
@@ -154,10 +168,10 @@ pauseBtn.addEventListener("click", () => {
   send({ type: "setPaused", value: !(view?.time.paused ?? false) });
 });
 
-globeBtn.addEventListener("click", () => {
+overviewBtn.addEventListener("click", () => {
   send({ type: "setActiveRegion", value: null });
   selectedCreatureId = null;
-  patchHint.textContent = "Globe view — select a region to watch its creatures evolve.";
+  patchHint.textContent = "Map overview — click land on the world map to watch creatures evolve.";
 });
 
 saveBtn.addEventListener("click", () => {
@@ -167,7 +181,10 @@ saveBtn.addEventListener("click", () => {
 newBtn.addEventListener("click", () => {
   localStorage.removeItem(SAVE_KEY);
   selectedCreatureId = null;
-  send({ type: "newWorld", seed: (Date.now() ^ (Math.random() * 0x7fffffff)) >>> 0 });
+  const seed = (Date.now() ^ (Math.random() * 0x7fffffff)) >>> 0;
+  worldMap = generateWorldMap(seed);
+  resetMapCamera();
+  send({ type: "newWorld", seed });
   flashButton(newBtn, "New world ✓");
 });
 
@@ -186,7 +203,7 @@ function resizeCanvas(canvas: HTMLCanvasElement, wrap: HTMLElement): void {
 }
 
 const observedCanvases: [HTMLCanvasElement, HTMLElement][] = [
-  [globeCanvas, globeCanvas.parentElement!],
+  [mapCanvas, mapCanvas.parentElement!],
   [patchCanvas, patchCanvas.parentElement!],
   [historyCanvas, historyCanvas.parentElement!],
   [phyloCanvas, phyloCanvas.parentElement!],
@@ -199,168 +216,98 @@ for (const [, wrap] of observedCanvases) ro.observe(wrap);
 // ---------------------------------------------------------------------------
 // Rendering
 // ---------------------------------------------------------------------------
-function biomassColor(t: number): string {
-  const x = Math.min(1, Math.max(0, t));
-  const h = 205 - 150 * x; // blue (barren) -> green (lush)
-  const l = 20 + 34 * x;
-  return `hsl(${h} 58% ${l}%)`;
-}
-
 function logicalCanvasSize(canvas: HTMLCanvasElement): { w: number; h: number } {
   const r = canvas.getBoundingClientRect();
   return { w: r.width, h: r.height };
 }
 
-function globeGeometry(w: number, h: number): { cx: number; cy: number; R: number } {
-  const cx = w * 0.5;
-  const cy = h * 0.52;
-  const R = Math.min(w, h) * 0.4;
-  return { cx, cy, R };
+let mapCamera: MapCamera = { panX: 0, panY: 0, zoom: 1 };
+let hoverChunk: number | null = null;
+let mapDragging = false;
+let mapDragLastX = 0;
+let mapDragLastY = 0;
+
+function resetMapCamera(): void {
+  const { w, h } = logicalCanvasSize(mapCanvas);
+  mapCamera = defaultMapCamera(worldMap, w, h);
 }
 
-function drawGlobe(v: ReadonlySimulationView): void {
-  const ctx = globeCanvas.getContext("2d");
+function drawMap(v: ReadonlySimulationView | null): void {
+  const ctx = mapCanvas.getContext("2d");
   if (!ctx) return;
-  const { w, h } = logicalCanvasSize(globeCanvas);
-  ctx.clearRect(0, 0, w, h);
-  const { cx, cy, R } = globeGeometry(w, h);
-  const n = v.regions.length;
-
-  // Atmospheric halo behind the planet.
-  const halo = ctx.createRadialGradient(cx, cy, R * 0.9, cx, cy, R * 1.28);
-  halo.addColorStop(0, "rgba(91,159,212,0.28)");
-  halo.addColorStop(1, "rgba(91,159,212,0)");
-  ctx.fillStyle = halo;
-  ctx.beginPath();
-  ctx.arc(cx, cy, R * 1.28, 0, Math.PI * 2);
-  ctx.fill();
-
-  // Colored region wedges, clipped to the planet disc.
-  ctx.save();
-  ctx.beginPath();
-  ctx.arc(cx, cy, R, 0, Math.PI * 2);
-  ctx.clip();
-  for (let i = 0; i < n; i++) {
-    const a0 = (i / n) * Math.PI * 2 - Math.PI / 2;
-    const a1 = ((i + 1) / n) * Math.PI * 2 - Math.PI / 2;
-    const reg = v.regions[i]!;
-    ctx.fillStyle = biomassColor(reg.biomass);
-    ctx.beginPath();
-    ctx.moveTo(cx, cy);
-    ctx.arc(cx, cy, R, a0, a1);
-    ctx.closePath();
-    ctx.fill();
-  }
-
-  // Graticule: latitude ellipses + longitude lines for a spherical read.
-  ctx.strokeStyle = "rgba(10,14,20,0.28)";
-  ctx.lineWidth = 1;
-  for (let k = 1; k <= 3; k++) {
-    const ry = (R * k) / 4;
-    ctx.beginPath();
-    ctx.ellipse(cx, cy, R, ry, 0, 0, Math.PI * 2);
-    ctx.stroke();
-  }
-  for (let k = 0; k < 6; k++) {
-    const rx = R * Math.cos((k / 6) * Math.PI);
-    ctx.beginPath();
-    ctx.ellipse(cx, cy, Math.abs(rx), R, 0, 0, Math.PI * 2);
-    ctx.stroke();
-  }
-
-  // Spherical shading: lit highlight upper-left fading to a dark limb.
-  const shade = ctx.createRadialGradient(
-    cx - R * 0.35,
-    cy - R * 0.4,
-    R * 0.1,
-    cx,
-    cy,
-    R * 1.05,
+  const { w, h } = logicalCanvasSize(mapCanvas);
+  drawWorldMap(
+    ctx,
+    worldMap,
+    mapCamera,
+    w,
+    h,
+    v,
+    v?.activeRegionId ?? null,
+    hoverChunk,
   );
-  shade.addColorStop(0, "rgba(255,255,255,0.32)");
-  shade.addColorStop(0.45, "rgba(255,255,255,0.03)");
-  shade.addColorStop(0.75, "rgba(0,0,0,0.18)");
-  shade.addColorStop(1, "rgba(0,0,0,0.62)");
-  ctx.fillStyle = shade;
-  ctx.beginPath();
-  ctx.arc(cx, cy, R, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.restore();
-
-  // Red markers on regions that currently host predators.
-  for (let i = 0; i < n; i++) {
-    const reg = v.regions[i]!;
-    if (reg.carnivores <= 0) continue;
-    const mid = ((i + 0.5) / n) * Math.PI * 2 - Math.PI / 2;
-    const mr = R * 0.82;
-    ctx.fillStyle = "#ff5a5a";
-    ctx.beginPath();
-    ctx.arc(cx + Math.cos(mid) * mr, cy + Math.sin(mid) * mr, 3, 0, Math.PI * 2);
-    ctx.fill();
-  }
-
-  // Event markers on regions with active drought, disease, or storms.
-  for (let i = 0; i < n; i++) {
-    const reg = v.regions[i]!;
-    if (reg.events.length === 0) continue;
-    const mid = ((i + 0.5) / n) * Math.PI * 2 - Math.PI / 2;
-    const mr = R * 0.68;
-    const px = cx + Math.cos(mid) * mr;
-    const py = cy + Math.sin(mid) * mr;
-    let offset = 0;
-    for (const ev of reg.events) {
-      if (ev.kind === "drought") ctx.fillStyle = "#d4a24a";
-      else if (ev.kind === "disease") ctx.fillStyle = "#b06cff";
-      else ctx.fillStyle = "#8ee7ff";
-      ctx.beginPath();
-      ctx.arc(px + offset, py, 3.5, 0, Math.PI * 2);
-      ctx.fill();
-      offset += 7;
-    }
-  }
-
-  // Highlight the active region wedge.
-  if (v.activeRegionId !== null) {
-    const i = v.activeRegionId;
-    const a0 = (i / n) * Math.PI * 2 - Math.PI / 2;
-    const a1 = ((i + 1) / n) * Math.PI * 2 - Math.PI / 2;
-    ctx.strokeStyle = "#eaf2ff";
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.moveTo(cx, cy);
-    ctx.arc(cx, cy, R, a0, a1);
-    ctx.closePath();
-    ctx.stroke();
-  }
-
-  // Planet rim.
-  ctx.strokeStyle = "rgba(150,180,220,0.5)";
-  ctx.lineWidth = 1.5;
-  ctx.beginPath();
-  ctx.arc(cx, cy, R, 0, Math.PI * 2);
-  ctx.stroke();
-
-  // Climate ring: each region's temperature, frozen blue to scorching red.
-  for (let i = 0; i < n; i++) {
-    const reg = v.regions[i]!;
-    const a0 = (i / n) * Math.PI * 2 - Math.PI / 2;
-    const a1 = ((i + 1) / n) * Math.PI * 2 - Math.PI / 2;
-    ctx.strokeStyle = `hsl(${220 - 210 * reg.temperature} 75% 55% / 0.85)`;
-    ctx.lineWidth = 3;
-    ctx.beginPath();
-    ctx.arc(cx, cy, R + 5, a0 + 0.01, a1 - 0.01);
-    ctx.stroke();
-  }
-
-  // Summary readout.
-  ctx.fillStyle = "#cdd7e6";
-  ctx.textAlign = "center";
-  ctx.font = "600 12px system-ui,sans-serif";
-  ctx.fillText(`${v.summary.totalPopulation} creatures`, cx, cy + R + 22);
-  ctx.fillStyle = "#8b95a8";
-  ctx.font = "11px system-ui,sans-serif";
-  ctx.fillText(`diversity ${v.summary.meanDiversity.toFixed(2)}`, cx, cy + R + 38);
 }
+
+mapCanvas.addEventListener("wheel", (e) => {
+  e.preventDefault();
+  const rect = mapCanvas.getBoundingClientRect();
+  const sx = e.clientX - rect.left;
+  const sy = e.clientY - rect.top;
+  const before = mapTileAtScreen(worldMap, mapCamera, sx, sy);
+  const factor = e.deltaY > 0 ? 0.9 : 1.1;
+  mapCamera.zoom = Math.min(24, Math.max(0.35, mapCamera.zoom * factor));
+  if (before) {
+    mapCamera.panX = sx - before.tx * mapCamera.zoom;
+    mapCamera.panY = sy - before.ty * mapCamera.zoom;
+  }
+});
+
+mapCanvas.addEventListener("mousedown", (e) => {
+  mapDragging = true;
+  mapDragLastX = e.clientX;
+  mapDragLastY = e.clientY;
+});
+
+window.addEventListener("mouseup", () => {
+  mapDragging = false;
+});
+
+mapCanvas.addEventListener("mousemove", (e) => {
+  const rect = mapCanvas.getBoundingClientRect();
+  const sx = e.clientX - rect.left;
+  const sy = e.clientY - rect.top;
+  if (mapDragging) {
+    mapCamera.panX += e.clientX - mapDragLastX;
+    mapCamera.panY += e.clientY - mapDragLastY;
+    mapDragLastX = e.clientX;
+    mapDragLastY = e.clientY;
+    return;
+  }
+  const tile = mapTileAtScreen(worldMap, mapCamera, sx, sy);
+  if (!tile) {
+    hoverChunk = null;
+    mapHint.textContent = "Procedural geography — pan, zoom, click land to open a regional arena.";
+    return;
+  }
+  const t = worldMap.tiles[tile.ty * worldMap.width + tile.tx]!;
+  hoverChunk = t.chunkId >= 0 ? t.chunkId : null;
+  mapHint.textContent = terrainAtCursor(worldMap, tile.tx, tile.ty);
+});
+
+mapCanvas.addEventListener("click", (e) => {
+  if (!view) return;
+  const rect = mapCanvas.getBoundingClientRect();
+  const tile = mapTileAtScreen(worldMap, mapCamera, e.clientX - rect.left, e.clientY - rect.top);
+  if (!tile) return;
+  const t = worldMap.tiles[tile.ty * worldMap.width + tile.tx]!;
+  if (t.chunkId < 0) return;
+  send({ type: "setActiveRegion", value: t.chunkId });
+  selectedCreatureId = null;
+  patchHint.textContent = chunkHintText(worldMap, t.chunkId, view);
+});
+
+// ResizeObserver callback also resets camera on first layout
+setTimeout(resetMapCamera, 0);
 
 function arenaTransform(
   w: number,
@@ -769,41 +716,8 @@ function drawPhylo(v: ReadonlySimulationView): void {
 }
 
 // ---------------------------------------------------------------------------
-// Input
+// Input (arena creature pick)
 // ---------------------------------------------------------------------------
-function sectorFromGlobeClick(clientX: number, clientY: number): number | null {
-  if (!view) return null;
-  const rect = globeCanvas.getBoundingClientRect();
-  const x = clientX - rect.left;
-  const y = clientY - rect.top;
-  const { cx, cy, R } = globeGeometry(rect.width, rect.height);
-  const dx = x - cx;
-  const dy = y - cy;
-  const dist = Math.hypot(dx, dy);
-  if (dist > R) return null;
-  let ang = Math.atan2(dy, dx) + Math.PI / 2;
-  if (ang < 0) ang += Math.PI * 2;
-  const n = view.regions.length;
-  const idx = Math.floor((ang / (Math.PI * 2)) * n);
-  return Math.min(n - 1, Math.max(0, idx));
-}
-
-globeCanvas.addEventListener("click", (e) => {
-  const id = sectorFromGlobeClick(e.clientX, e.clientY);
-  if (id === null || !view) return;
-  send({ type: "setActiveRegion", value: id });
-  selectedCreatureId = null;
-  const reg = view.regions[id];
-  const climate = reg
-    ? ` · ${reg.biome} (${reg.temperature < 0.3 ? "cold" : reg.temperature > 0.65 ? "hot" : "mild"})`
-    : "";
-  const eventHint =
-    reg && reg.events.length > 0
-      ? ` · ${reg.events.map((e) => e.kind).join(", ")} active`
-      : "";
-  patchHint.textContent = `Region ${id}${climate}${eventHint} — click a blob to inspect it`;
-});
-
 patchCanvas.addEventListener("click", (e) => {
   if (!view) return;
   const creatures = view.activeCreatures;
@@ -841,17 +755,17 @@ function frame(): void {
       <span>Speed <strong>${view.time.speedMultiplier}×</strong>${view.time.paused ? " (paused)" : ""}</span>
     `;
     pauseBtn.textContent = view.time.paused ? "Resume" : "Pause";
-    const onGlobe = view.activeRegionId === null;
-    globeBtn.disabled = onGlobe;
-    globeBtn.classList.toggle("active", onGlobe);
+    const onOverview = view.activeRegionId === null;
+    overviewBtn.disabled = onOverview;
+    overviewBtn.classList.toggle("active", onOverview);
     if (String(view.time.speedMultiplier) !== speedSel.value) {
       speedSel.value = String(view.time.speedMultiplier);
     }
-    drawGlobe(view);
     drawArena(view);
     drawHistory();
     drawPhylo(view);
   }
+  drawMap(view);
   requestAnimationFrame(frame);
 }
 

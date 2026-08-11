@@ -160,6 +160,14 @@ canvas {
   cursor: crosshair;
 }
 
+#map-canvas {
+  cursor: grab;
+}
+
+#map-canvas:active {
+  cursor: grabbing;
+}
+
 .hint {
   font-size: 0.75rem;
   color: var(--muted);

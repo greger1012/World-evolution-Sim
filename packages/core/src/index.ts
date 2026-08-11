@@ -14,6 +14,19 @@ export {
   regionTemperature,
   richnessForAll,
 } from "./globe.js";
+export {
+  DEFAULT_MAP_HEIGHT,
+  DEFAULT_MAP_WIDTH,
+  MAP_CHUNK_COLS,
+  MAP_CHUNK_COUNT,
+  MAP_CHUNK_ROWS,
+  chunkTileBounds,
+  generateWorldMap,
+  getMapTile,
+  mapMatchesSimulation,
+  summarizeChunk,
+} from "./worldmap.js";
+export type { MapTile, TerrainId, WorldMapData } from "./worldmap.js";
 export type {
   ArenaStats,
   CreatureView,
