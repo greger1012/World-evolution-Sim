@@ -11,6 +11,7 @@ import type {
 import {
   chunkHintText,
   defaultMapCamera,
+  drawArenaTerrain,
   drawWorldMap,
   mapTileAtScreen,
   terrainAtCursor,
@@ -338,10 +339,24 @@ function drawArena(v: ReadonlySimulationView): void {
   const arenaSize = v.arenaSize;
   const { scale, ox, oy } = arenaTransform(w, h, arenaSize);
 
-  // Arena floor.
-  ctx.fillStyle = "#0b120e";
-  ctx.fillRect(ox, oy, arenaSize * scale, arenaSize * scale);
-  ctx.strokeStyle = "#1d2a22";
+  // Terrain floor from the world map chunk.
+  if (v.activeTerrain && v.activeTerrainCols > 0 && v.activeTerrainRows > 0) {
+    drawArenaTerrain(
+      ctx,
+      ox,
+      oy,
+      scale,
+      arenaSize,
+      v.activeTerrainCols,
+      v.activeTerrainRows,
+      v.activeTerrain,
+    );
+  } else {
+    ctx.fillStyle = "#0b120e";
+    ctx.fillRect(ox, oy, arenaSize * scale, arenaSize * scale);
+  }
+  ctx.strokeStyle = "rgba(255,255,255,0.12)";
+  ctx.lineWidth = 1;
   ctx.strokeRect(ox, oy, arenaSize * scale, arenaSize * scale);
 
   // Food.

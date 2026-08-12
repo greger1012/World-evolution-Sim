@@ -1,5 +1,13 @@
-export { EventScheduler } from "./events.js";
+export {
+  ChunkTerrain,
+  TERRAIN_MOVE_COST,
+  chunkNeighbors,
+  edgeOpposite,
+  tileSample,
+} from "./chunkterrain.js";
+export type { BorderEdge, TerrainSample } from "./chunkterrain.js";
 export type { EventKind, EventSchedulerState, RegionModifiers } from "./events.js";
+export { EventScheduler } from "./events.js";
 export { defaultSimulationConfig, speedPresets } from "./config.js";
 export { EvolutionSimulation } from "./simulation.js";
 export type { SavedWorld } from "./simulation.js";
@@ -29,6 +37,7 @@ export {
 export type { MapTile, TerrainId, WorldMapData } from "./worldmap.js";
 export type {
   ArenaStats,
+  ArenaTerrainCell,
   CreatureView,
   FoodView,
   Genome,

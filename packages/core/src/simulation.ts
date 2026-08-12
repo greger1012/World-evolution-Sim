@@ -1,10 +1,12 @@
 import { RegionEcosystem } from "./creatures.js";
 import type { Creature, EcosystemState } from "./creatures.js";
+import { ChunkTerrain, chunkNeighbors, edgeOpposite } from "./chunkterrain.js";
 import { EventScheduler } from "./events.js";
 import type { EventSchedulerState } from "./events.js";
-import { biomeName, regionRichness, regionSeed, regionTemperature } from "./globe.js";
 import { SpeciesRegistry } from "./species.js";
 import type { SpeciesRegistryState } from "./species.js";
+import { generateWorldMap } from "./worldmap.js";
+import type { WorldMapData } from "./worldmap.js";
 import type {
   HistorySample,
   ReadonlySimulationView,
@@ -42,6 +44,7 @@ export class EvolutionSimulation {
   private readonly baseSeed: number;
   private readonly ecosystems: RegionEcosystem[];
   private readonly registry: SpeciesRegistry;
+  private readonly worldMap: WorldMapData;
   private events: EventScheduler;
   private idCounter = 1;
   private tick = 0;
@@ -56,17 +59,21 @@ export class EvolutionSimulation {
   constructor(config: SimulationConfig, baseSeed = 1337) {
     this.config = config;
     this.baseSeed = baseSeed;
+    this.worldMap = generateWorldMap(baseSeed);
     this.ecosystems = [];
     const idAlloc = () => this.idCounter++;
     for (let i = 0; i < config.regionCount; i++) {
+      const terrain = new ChunkTerrain(this.worldMap, i);
       this.ecosystems.push(
         new RegionEcosystem({
           size: config.patchSize,
-          richness: regionRichness(i, config.regionCount),
-          temperature: regionTemperature(i, config.regionCount),
-          seed: regionSeed(baseSeed, i),
+          richness: terrain.meanRichness(),
+          temperature: terrain.meanTemperature(),
+          seed: (baseSeed ^ ((i + 1) * 0x9e3779b1)) >>> 0,
           initialCreatures: config.initialCreatures,
           maxCreatures: config.maxCreatures,
+          chunkId: i,
+          terrain,
           idAlloc,
         }),
       );
@@ -79,6 +86,10 @@ export class EvolutionSimulation {
 
   getConfig(): Readonly<SimulationConfig> {
     return this.config;
+  }
+
+  getWorldMap(): Readonly<WorldMapData> {
+    return this.worldMap;
   }
 
   setPaused(paused: boolean): void {
@@ -208,7 +219,7 @@ export class EvolutionSimulation {
         population,
         carnivores: eco.carnivoreCount,
         temperature: eco.temperature,
-        biome: biomeName(eco.temperature, eco.richness),
+        biome: eco.chunkLabel(),
         events: this.events.regionEvents(i, this.simTime),
       };
       total += biomass;
@@ -237,6 +248,9 @@ export class EvolutionSimulation {
       activeFood: activeEco ? activeEco.foodViews() : null,
       activeStats: activeEco ? activeEco.stats() : null,
       arenaSize: this.config.patchSize,
+      activeTerrain: activeEco ? activeEco.terrainViews() : null,
+      activeTerrainCols: activeEco ? activeEco.terrainCols() : 0,
+      activeTerrainRows: activeEco ? activeEco.terrainRows() : 0,
     };
   }
 
@@ -267,12 +281,17 @@ export class EvolutionSimulation {
         const mods = this.events.modifiersFor(i, t);
         this.ecosystems[i]!.step(h, mods);
       }
-      // Route border-crossers to the neighbouring region (ring topology).
+      // Route border-crossers to orthogonally adjacent chunks on the map grid.
       for (let i = 0; i < n; i++) {
         const out = this.ecosystems[i]!.takeEmigrants();
+        const neighbors = chunkNeighbors(i);
         for (const e of out) {
-          const dest = (i + e.direction + n) % n;
-          this.ecosystems[dest]!.receiveMigrant(e);
+          const dest = neighbors[e.edge];
+          if (dest === null || dest < 0 || dest >= n) continue;
+          this.ecosystems[dest]!.receiveMigrant({
+            creature: e.creature,
+            edge: edgeOpposite(e.edge),
+          });
         }
       }
     }

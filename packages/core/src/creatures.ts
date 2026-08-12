@@ -1,4 +1,6 @@
 import { climateFoodFactor } from "./globe.js";
+import type { BorderEdge, ChunkTerrain } from "./chunkterrain.js";
+import type { TerrainId } from "./worldmap.js";
 import type { RegionModifiers } from "./events.js";
 import { DEFAULT_REGION_MODIFIERS } from "./events.js";
 import { SpatialGrid } from "./spatial.js";
@@ -182,8 +184,8 @@ export type Creature = {
   infection: number;
 };
 
-/** A creature leaving a region: direction is -1 (left/previous) or +1 (right/next). */
-export type Emigrant = { creature: Creature; direction: -1 | 1 };
+/** A creature leaving a region through a map-grid edge. */
+export type Emigrant = { creature: Creature; edge: BorderEdge };
 
 /** JSON-safe snapshot of one region's full mutable state. */
 export type EcosystemState = {
@@ -296,8 +298,10 @@ function crossover(a: Genome, b: Genome, rng: () => number): Genome {
  */
 export class RegionEcosystem {
   readonly size: number;
+  readonly chunkId: number;
   readonly richness: number;
   readonly temperature: number;
+  readonly terrain: ChunkTerrain | null;
   private readonly rng: Rng;
   private readonly maxCreatures: number;
   private readonly nextId: () => number;
@@ -320,12 +324,16 @@ export class RegionEcosystem {
     seed: number;
     initialCreatures: number;
     maxCreatures: number;
+    chunkId?: number;
+    terrain?: ChunkTerrain;
     /** Shared id allocator so ids stay unique across regions (migration). */
     idAlloc: () => number;
   }) {
     this.size = opts.size;
-    this.richness = opts.richness;
-    this.temperature = opts.temperature;
+    this.chunkId = opts.chunkId ?? 0;
+    this.terrain = opts.terrain ?? null;
+    this.richness = this.terrain?.meanRichness() ?? opts.richness;
+    this.temperature = this.terrain?.meanTemperature() ?? opts.temperature;
     this.rng = makeRng(opts.seed);
     this.maxCreatures = opts.maxCreatures;
     this.nextId = opts.idAlloc;
@@ -420,17 +428,58 @@ export class RegionEcosystem {
     return out;
   }
 
-  /** Accept a creature arriving from a neighbouring region. */
+  /** Accept a creature arriving from a neighbouring chunk. */
   receiveMigrant(e: Emigrant): void {
     const c = e.creature;
     c.migrated = false;
-    // Entering from the side opposite to its travel direction.
-    c.x = e.direction === 1 ? 0.5 : this.size - 0.5;
+    switch (e.edge) {
+      case "west":
+        c.x = this.size - 0.5;
+        break;
+      case "east":
+        c.x = 0.5;
+        break;
+      case "north":
+        c.y = this.size - 0.5;
+        break;
+      case "south":
+        c.y = 0.5;
+        break;
+    }
     c.y = clamp(c.y, 0, this.size);
+    c.x = clamp(c.x, 0, this.size);
     this.creatures.push(c);
   }
 
+  terrainViews(): { terrain: TerrainId; richness: number }[] {
+    return this.terrain?.renderCells() ?? [];
+  }
+
+  terrainCols(): number {
+    return this.terrain?.cols ?? 0;
+  }
+
+  terrainRows(): number {
+    return this.terrain?.rows ?? 0;
+  }
+
+  chunkLabel(): string {
+    return this.terrain?.dominantLabel() ?? "plains";
+  }
+
+  private sampleAt(x: number, y: number) {
+    return this.terrain?.sample(x, y, this.size) ?? null;
+  }
+
   private randomPoint(): Food {
+    for (let attempt = 0; attempt < 14; attempt++) {
+      const x = this.rng() * this.size;
+      const y = this.rng() * this.size;
+      const s = this.sampleAt(x, y);
+      if (s && s.terrain !== "ocean" && s.foodFactor >= 0.12) {
+        return { x, y, dead: false };
+      }
+    }
     return { x: this.rng() * this.size, y: this.rng() * this.size, dead: false };
   }
 
@@ -509,11 +558,15 @@ export class RegionEcosystem {
 
       const g = c.genome;
       const pred = isPredator(g);
+      const tile = this.sampleAt(c.x, c.y);
+      const temp = tile?.temperature ?? this.temperature;
+      const terrainMul = tile?.moveCost ?? 1;
       const moveCost =
         MOVE_COST * g.size * g.size * g.speed * g.speed *
-        (pred ? PREDATOR_MOVE_DISCOUNT : 1);
-      const cold = Math.max(0, COLD_THRESHOLD - this.temperature);
-      const heat = Math.max(0, this.temperature - HEAT_THRESHOLD);
+        (pred ? PREDATOR_MOVE_DISCOUNT : 1) *
+        terrainMul;
+      const cold = Math.max(0, COLD_THRESHOLD - temp);
+      const heat = Math.max(0, temp - HEAT_THRESHOLD);
       const climateStress =
         mods.climateStressMul *
         ((COLD_STRESS * cold) / g.size + HEAT_STRESS * heat * g.size);
@@ -694,7 +747,15 @@ export class RegionEcosystem {
     let expected = deficit * FOOD_REGROW * mods.foodRegrowMul * dt;
     while (expected > 0) {
       if (expected >= 1 || this.rng() < expected) {
-        const f = this.randomPoint();
+        const x = this.rng() * this.size;
+        const y = this.rng() * this.size;
+        const s = this.sampleAt(x, y);
+        const weight = s?.foodFactor ?? 1;
+        if (weight < 0.1 && this.rng() > weight) {
+          expected -= 1;
+          continue;
+        }
+        const f = { x, y, dead: false };
         this.food.push(f);
         this.foodGrid.insert(f);
       }
@@ -887,30 +948,44 @@ export class RegionEcosystem {
     c.heading += (this.rng() - 0.5) * TURN_JITTER * dt;
   }
 
+  private tryBorderCross(c: Creature, edge: BorderEdge): boolean {
+    const borderX =
+      edge === "west" ? 0 : edge === "east" ? this.size : c.x;
+    const borderY =
+      edge === "north" ? 0 : edge === "south" ? this.size : c.y;
+    const tile = this.sampleAt(borderX, borderY);
+    const crossCost = MIGRATION_COST + (tile ? (tile.moveCost - 1) * 0.05 : 0);
+    if (this.rng() >= MIGRATION_CHANCE || c.energy <= crossCost) return false;
+    c.energy -= crossCost;
+    c.migrated = true;
+    this.emigrants.push({ creature: c, edge });
+    return true;
+  }
+
   private move(c: Creature, dt: number): void {
+    const tile0 = this.sampleAt(c.x, c.y);
+    const speedMul = tile0 ? 1 / Math.sqrt(tile0.moveCost) : 1;
     const sprint = isPredator(c.genome) ? PREDATOR_SPRINT : 1;
-    const v = effectiveSpeed(c.genome) * MOVE_SPEED * sprint;
+    const v = effectiveSpeed(c.genome) * MOVE_SPEED * sprint * speedMul;
     c.x += Math.cos(c.heading) * v * dt;
     c.y += Math.sin(c.heading) * v * dt;
 
-    // Left/right edges border the neighbouring regions: crossing sometimes
-    // succeeds (and costs energy), otherwise the border turns the creature back.
-    if (c.x < 0 || c.x > this.size) {
-      const direction: -1 | 1 = c.x < 0 ? -1 : 1;
-      if (this.rng() < MIGRATION_CHANCE && c.energy > MIGRATION_COST) {
-        c.energy -= MIGRATION_COST;
-        c.migrated = true;
-        c.x = clamp(c.x, 0, this.size);
-        this.emigrants.push({ creature: c, direction });
-        return;
-      }
-      c.x = direction === -1 ? -c.x : 2 * this.size - c.x;
+    // Map-grid edges: crossing enters the neighbouring chunk (N/S/E/W).
+    if (c.x < 0) {
+      if (this.tryBorderCross(c, "west")) return;
+      c.x = -c.x;
+      c.heading = Math.PI - c.heading;
+    } else if (c.x > this.size) {
+      if (this.tryBorderCross(c, "east")) return;
+      c.x = 2 * this.size - c.x;
       c.heading = Math.PI - c.heading;
     }
     if (c.y < 0) {
+      if (this.tryBorderCross(c, "north")) return;
       c.y = -c.y;
       c.heading = -c.heading;
     } else if (c.y > this.size) {
+      if (this.tryBorderCross(c, "south")) return;
       c.y = 2 * this.size - c.y;
       c.heading = -c.heading;
     }

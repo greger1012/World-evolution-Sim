@@ -172,17 +172,28 @@ export type ArenaStats = {
   deaths: number;
 };
 
+import type { TerrainId } from "./worldmap.js";
+
+export type ArenaTerrainCell = {
+  terrain: TerrainId;
+  richness: number;
+};
+
 export type ReadonlySimulationView = {
   summary: GlobeSummary;
   regions: readonly RegionState[];
   time: TimeControls;
   activeRegionId: number | null;
-  /** Creatures in the active region; null when viewing the globe. */
+  /** Creatures in the active region; null when viewing the map overview. */
   activeCreatures: readonly CreatureView[] | null;
-  /** Food points in the active region; null when viewing the globe. */
+  /** Food points in the active region; null when viewing the map overview. */
   activeFood: readonly FoodView[] | null;
-  /** Aggregate stats for the active region; null when viewing the globe. */
+  /** Aggregate stats for the active region; null when viewing the map overview. */
   activeStats: ArenaStats | null;
   /** Arena edge length in world units (square). */
   arenaSize: number;
+  /** Terrain grid for the active chunk (matches map); null on overview. */
+  activeTerrain: readonly ArenaTerrainCell[] | null;
+  activeTerrainCols: number;
+  activeTerrainRows: number;
 };

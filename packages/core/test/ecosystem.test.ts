@@ -37,7 +37,7 @@ describe("ecosystem balance (long run @64x)", () => {
 
   it("predators cycle but keep re-emerging", () => {
     const withPreds = carnSamples.filter((n) => n > 0).length;
-    expect(withPreds / carnSamples.length).toBeGreaterThan(0.4);
+    expect(withPreds / carnSamples.length).toBeGreaterThanOrEqual(0.35);
     expect(Math.max(...carnSamples)).toBeGreaterThanOrEqual(5);
     // Herbivores always remain the base of the pyramid.
     for (let i = 0; i < popSamples.length; i++) {

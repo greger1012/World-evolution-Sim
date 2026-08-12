@@ -54,6 +54,36 @@ export function mapTileAtScreen(
   return { tx, ty };
 }
 
+export function drawArenaTerrain(
+  ctx: CanvasRenderingContext2D,
+  ox: number,
+  oy: number,
+  scale: number,
+  arenaSize: number,
+  cols: number,
+  rows: number,
+  cells: readonly { terrain: TerrainId; richness: number }[],
+): void {
+  if (cols <= 0 || rows <= 0 || cells.length === 0) return;
+  const tw = arenaSize / cols;
+  const th = arenaSize / rows;
+  for (let row = 0; row < rows; row++) {
+    for (let col = 0; col < cols; col++) {
+      const cell = cells[row * cols + col]!;
+      ctx.fillStyle = terrainColor(cell.terrain, 0.5);
+      const px = ox + col * tw * scale;
+      const py = oy + row * th * scale;
+      const pw = Math.ceil(tw * scale);
+      const ph = Math.ceil(th * scale);
+      ctx.fillRect(px, py, pw, ph);
+      if (cell.richness > 0.55) {
+        ctx.fillStyle = `rgba(160,230,120,${(cell.richness - 0.5) * 0.25})`;
+        ctx.fillRect(px, py, pw, ph);
+      }
+    }
+  }
+}
+
 export function drawWorldMap(
   ctx: CanvasRenderingContext2D,
   map: WorldMapData,
