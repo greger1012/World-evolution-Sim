@@ -208,7 +208,6 @@ function carveRivers(tiles: MapTile[], width: number, height: number, seed: numb
 
 /**
  * Build a deterministic top-down tile map from a seed.
- * Phase A: visual + chunk layout; simulation hookup follows in Phase B.
  */
 export function generateWorldMap(
   seed: number,

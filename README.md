@@ -71,7 +71,7 @@ Or use the workspace scripts in `package.json` to run web and Electron together.
 ## How to use the current UI
 
 1. Watch the **world map** (top-down procedural geography): oceans, coasts, forests, jungles, deserts, tundra, **mountains**, **swamps**, and **rivers**. Drag to pan, scroll to zoom. Brighter green tint marks higher fertility when zoomed in.
-2. **Click land** on the map to open that chunk's **living arena** (simulation overlay shows biomass per chunk; full terrain hookup arrives in Phase B).
+2. **Click land** on the map to open that chunk's **living arena** — the floor is painted from the same map tiles (forests, swamps, mountains, rivers). Creatures pay extra energy and move slower on mountains and swamps.
 2. Use the **speed** dropdown to accelerate or slow time (evolution runs faster at higher multipliers).
 3. **Pause / Resume** to freeze the world state.
 4. **Click a region** on the globe to open its **living arena**: creatures ("blobs") with heritable traits (size, speed, sense, diet) graze plants, flee or hunt each other, breed, and die. Herbivores carry a soft ring; **predators carry a bold red ring**.
@@ -143,9 +143,9 @@ Watch mode (package only): `npm run test -w @evo-world-sim/core -- --watch`
 | Web worker (sim off main thread) | Working |
 | Save / load (localStorage + core snapshots) | Working |
 | World events (drought, disease, storm) | Working prototype |
-| 2D procedural world map (Phase A — visual) | Working prototype |
-| Map ↔ simulation terrain hookup (Phase B) | Planned |
-| Full 2D world map (WorldBox-style) | Planned |
+| 2D procedural world map | Working |
+| Map ↔ sim terrain hookup (Phase B) | Working |
+| Unified zoom map view (Phase C) | Planned |
 
 Feedback and contributions can wait until the core evolution model is further along; the public surface will keep changing.
 
