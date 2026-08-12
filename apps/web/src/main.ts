@@ -1,7 +1,6 @@
 import "./style.css";
 import { generateWorldMap, speedPresets } from "@evo-world-sim/core";
 import type {
-  ArenaStats,
   HistorySample,
   ReadonlySimulationView,
   SavedWorld,
@@ -10,20 +9,23 @@ import type {
 } from "@evo-world-sim/core";
 import {
   chunkHintText,
+  chunkAtScreen,
   defaultMapCamera,
-  drawArenaTerrain,
-  drawWorldMap,
+  DETAIL_TILE_PX,
+  drawInspectOverlay,
+  drawUnifiedWorldMap,
   mapTileAtScreen,
+  MAX_MAP_ZOOM,
+  MIN_MAP_ZOOM,
+  screenToArena,
   terrainAtCursor,
+  zoomCameraToChunk,
   type MapCamera,
 } from "./map-view.js";
 import type { MainToWorker, WorkerToMain } from "./protocol.js";
 
 const SAVE_KEY = "evo-world-sim-save-v1";
 
-// ---------------------------------------------------------------------------
-// Simulation worker: the sim runs off the main thread; we render snapshots.
-// ---------------------------------------------------------------------------
 const worker = new Worker(new URL("./sim.worker.ts", import.meta.url), {
   type: "module",
 });
@@ -76,13 +78,8 @@ const worldSeed = savedOnLoad?.seed ?? 1337;
 let worldMap: WorldMapData = generateWorldMap(worldSeed);
 
 send({ type: "init", seed: worldSeed, saved: savedOnLoad });
-
-// Autosave: the world quietly persists so a refresh never loses it.
 setInterval(() => send({ type: "save", reason: "auto" }), 30_000);
 
-// ---------------------------------------------------------------------------
-// UI scaffolding
-// ---------------------------------------------------------------------------
 const app = document.querySelector<HTMLDivElement>("#app")!;
 app.innerHTML = `
   <header>
@@ -93,24 +90,17 @@ app.innerHTML = `
         <select id="speed"></select>
       </label>
       <button type="button" id="pause">Pause</button>
-      <button type="button" id="overview" class="active" disabled>Overview</button>
+      <button type="button" id="overview" class="active" disabled>World view</button>
       <button type="button" id="save" title="Save this world in the browser">Save</button>
       <button type="button" id="new" title="Start a fresh world">New world</button>
     </div>
   </header>
   <main>
-    <section class="panel">
-      <header><h2>World map</h2></header>
-      <p class="hint" id="map-hint">Procedural geography — pan, zoom, click land to open a regional arena.</p>
-      <div class="canvas-wrap">
-        <canvas id="map-canvas" width="600" height="400" aria-label="World map"></canvas>
-      </div>
-    </section>
-    <section class="panel">
-      <header><h2>Regional arena</h2></header>
-      <p class="hint" id="patch-hint">Map overview — click land on the world map to watch creatures evolve.</p>
-      <div class="canvas-wrap">
-        <canvas id="patch-canvas" width="600" height="400" aria-label="Regional arena"></canvas>
+    <section class="panel panel-hero">
+      <header><h2>World</h2></header>
+      <p class="hint" id="map-hint">Pan and zoom the map — click land to zoom in and watch evolution.</p>
+      <div class="canvas-wrap canvas-wrap-hero">
+        <canvas id="world-canvas" width="800" height="520" aria-label="Unified world map"></canvas>
       </div>
     </section>
     <section class="panel">
@@ -137,9 +127,7 @@ const overviewBtn = document.querySelector<HTMLButtonElement>("#overview")!;
 const saveBtn = document.querySelector<HTMLButtonElement>("#save")!;
 const newBtn = document.querySelector<HTMLButtonElement>("#new")!;
 const mapHint = document.querySelector<HTMLParagraphElement>("#map-hint")!;
-const patchHint = document.querySelector<HTMLParagraphElement>("#patch-hint")!;
-const mapCanvas = document.querySelector<HTMLCanvasElement>("#map-canvas")!;
-const patchCanvas = document.querySelector<HTMLCanvasElement>("#patch-canvas")!;
+const worldCanvas = document.querySelector<HTMLCanvasElement>("#world-canvas")!;
 const historyCanvas = document.querySelector<HTMLCanvasElement>("#history-canvas")!;
 const phyloCanvas = document.querySelector<HTMLCanvasElement>("#phylo-canvas")!;
 
@@ -170,9 +158,10 @@ pauseBtn.addEventListener("click", () => {
 });
 
 overviewBtn.addEventListener("click", () => {
-  send({ type: "setActiveRegion", value: null });
   selectedCreatureId = null;
-  patchHint.textContent = "Map overview — click land on the world map to watch creatures evolve.";
+  resetMapCamera();
+  send({ type: "setActiveRegion", value: null });
+  mapHint.textContent = "Pan and zoom the map — click land to zoom in and watch evolution.";
 });
 
 saveBtn.addEventListener("click", () => {
@@ -204,8 +193,7 @@ function resizeCanvas(canvas: HTMLCanvasElement, wrap: HTMLElement): void {
 }
 
 const observedCanvases: [HTMLCanvasElement, HTMLElement][] = [
-  [mapCanvas, mapCanvas.parentElement!],
-  [patchCanvas, patchCanvas.parentElement!],
+  [worldCanvas, worldCanvas.parentElement!],
   [historyCanvas, historyCanvas.parentElement!],
   [phyloCanvas, phyloCanvas.parentElement!],
 ];
@@ -214,9 +202,6 @@ const ro = new ResizeObserver(() => {
 });
 for (const [, wrap] of observedCanvases) ro.observe(wrap);
 
-// ---------------------------------------------------------------------------
-// Rendering
-// ---------------------------------------------------------------------------
 function logicalCanvasSize(canvas: HTMLCanvasElement): { w: number; h: number } {
   const r = canvas.getBoundingClientRect();
   return { w: r.width, h: r.height };
@@ -227,54 +212,84 @@ let hoverChunk: number | null = null;
 let mapDragging = false;
 let mapDragLastX = 0;
 let mapDragLastY = 0;
+let dragMoved = false;
 
 function resetMapCamera(): void {
-  const { w, h } = logicalCanvasSize(mapCanvas);
+  const { w, h } = logicalCanvasSize(worldCanvas);
   mapCamera = defaultMapCamera(worldMap, w, h);
 }
 
-function drawMap(v: ReadonlySimulationView | null): void {
-  const ctx = mapCanvas.getContext("2d");
+function isDetailZoom(): boolean {
+  return mapCamera.zoom >= DETAIL_TILE_PX;
+}
+
+function syncActiveRegionFromCamera(): void {
+  const { w, h } = logicalCanvasSize(worldCanvas);
+  if (!isDetailZoom()) {
+    if (view?.activeRegionId !== null) {
+      send({ type: "setActiveRegion", value: null });
+    }
+    return;
+  }
+  const chunkId = chunkAtScreen(worldMap, mapCamera, w / 2, h / 2);
+  if (chunkId === null) return;
+  if (view?.activeRegionId !== chunkId) {
+    send({ type: "setActiveRegion", value: chunkId });
+    selectedCreatureId = null;
+  }
+}
+
+function drawWorld(v: ReadonlySimulationView | null): void {
+  const ctx = worldCanvas.getContext("2d");
   if (!ctx) return;
-  const { w, h } = logicalCanvasSize(mapCanvas);
-  drawWorldMap(
+  const { w, h } = logicalCanvasSize(worldCanvas);
+  const activeChunk = v?.activeRegionId ?? null;
+  const selected = drawUnifiedWorldMap(
     ctx,
     worldMap,
     mapCamera,
     w,
     h,
     v,
-    v?.activeRegionId ?? null,
+    activeChunk,
     hoverChunk,
+    { selectedCreatureId, speciesById },
   );
+
+  if (isDetailZoom() && v?.activeStats) {
+    drawInspectOverlay(ctx, w, v.activeStats, selected, speciesById);
+  }
 }
 
-mapCanvas.addEventListener("wheel", (e) => {
+worldCanvas.addEventListener("wheel", (e) => {
   e.preventDefault();
-  const rect = mapCanvas.getBoundingClientRect();
+  const rect = worldCanvas.getBoundingClientRect();
   const sx = e.clientX - rect.left;
   const sy = e.clientY - rect.top;
   const before = mapTileAtScreen(worldMap, mapCamera, sx, sy);
   const factor = e.deltaY > 0 ? 0.9 : 1.1;
-  mapCamera.zoom = Math.min(24, Math.max(0.35, mapCamera.zoom * factor));
+  mapCamera.zoom = Math.min(MAX_MAP_ZOOM, Math.max(MIN_MAP_ZOOM, mapCamera.zoom * factor));
   if (before) {
     mapCamera.panX = sx - before.tx * mapCamera.zoom;
     mapCamera.panY = sy - before.ty * mapCamera.zoom;
   }
+  syncActiveRegionFromCamera();
 });
 
-mapCanvas.addEventListener("mousedown", (e) => {
+worldCanvas.addEventListener("mousedown", (e) => {
   mapDragging = true;
+  dragMoved = false;
   mapDragLastX = e.clientX;
   mapDragLastY = e.clientY;
 });
 
 window.addEventListener("mouseup", () => {
+  if (mapDragging) syncActiveRegionFromCamera();
   mapDragging = false;
 });
 
-mapCanvas.addEventListener("mousemove", (e) => {
-  const rect = mapCanvas.getBoundingClientRect();
+worldCanvas.addEventListener("mousemove", (e) => {
+  const rect = worldCanvas.getBoundingClientRect();
   const sx = e.clientX - rect.left;
   const sy = e.clientY - rect.top;
   if (mapDragging) {
@@ -282,267 +297,59 @@ mapCanvas.addEventListener("mousemove", (e) => {
     mapCamera.panY += e.clientY - mapDragLastY;
     mapDragLastX = e.clientX;
     mapDragLastY = e.clientY;
+    dragMoved = true;
     return;
   }
   const tile = mapTileAtScreen(worldMap, mapCamera, sx, sy);
   if (!tile) {
     hoverChunk = null;
-    mapHint.textContent = "Procedural geography — pan, zoom, click land to open a regional arena.";
+    if (!isDetailZoom()) {
+      mapHint.textContent = "Pan and zoom the map — click land to zoom in and watch evolution.";
+    }
     return;
   }
   const t = worldMap.tiles[tile.ty * worldMap.width + tile.tx]!;
   hoverChunk = t.chunkId >= 0 ? t.chunkId : null;
-  mapHint.textContent = terrainAtCursor(worldMap, tile.tx, tile.ty);
-});
-
-mapCanvas.addEventListener("click", (e) => {
-  if (!view) return;
-  const rect = mapCanvas.getBoundingClientRect();
-  const tile = mapTileAtScreen(worldMap, mapCamera, e.clientX - rect.left, e.clientY - rect.top);
-  if (!tile) return;
-  const t = worldMap.tiles[tile.ty * worldMap.width + tile.tx]!;
-  if (t.chunkId < 0) return;
-  send({ type: "setActiveRegion", value: t.chunkId });
-  selectedCreatureId = null;
-  patchHint.textContent = chunkHintText(worldMap, t.chunkId, view);
-});
-
-// ResizeObserver callback also resets camera on first layout
-setTimeout(resetMapCamera, 0);
-
-function arenaTransform(
-  w: number,
-  h: number,
-  arenaSize: number,
-): { scale: number; ox: number; oy: number } {
-  const scale = Math.min(w, h) / arenaSize;
-  const ox = (w - arenaSize * scale) / 2;
-  const oy = (h - arenaSize * scale) / 2;
-  return { scale, ox, oy };
-}
-
-function drawArena(v: ReadonlySimulationView): void {
-  const ctx = patchCanvas.getContext("2d");
-  if (!ctx) return;
-  const { w, h } = logicalCanvasSize(patchCanvas);
-  ctx.clearRect(0, 0, w, h);
-  const creatures = v.activeCreatures;
-  const food = v.activeFood;
-  if (!creatures || !food) {
-    ctx.fillStyle = "#2a3140";
-    ctx.font = "13px system-ui,sans-serif";
-    ctx.textAlign = "center";
-    ctx.fillText("No region selected", w / 2, h / 2);
-    return;
-  }
-
-  const arenaSize = v.arenaSize;
-  const { scale, ox, oy } = arenaTransform(w, h, arenaSize);
-
-  // Terrain floor from the world map chunk.
-  if (v.activeTerrain && v.activeTerrainCols > 0 && v.activeTerrainRows > 0) {
-    drawArenaTerrain(
-      ctx,
-      ox,
-      oy,
-      scale,
-      arenaSize,
-      v.activeTerrainCols,
-      v.activeTerrainRows,
-      v.activeTerrain,
-    );
+  if (isDetailZoom() && view && view.activeRegionId !== null) {
+    mapHint.textContent = chunkHintText(worldMap, view.activeRegionId, view);
   } else {
-    ctx.fillStyle = "#0b120e";
-    ctx.fillRect(ox, oy, arenaSize * scale, arenaSize * scale);
+    mapHint.textContent = terrainAtCursor(worldMap, tile.tx, tile.ty);
   }
-  ctx.strokeStyle = "rgba(255,255,255,0.12)";
-  ctx.lineWidth = 1;
-  ctx.strokeRect(ox, oy, arenaSize * scale, arenaSize * scale);
+});
 
-  // Food.
-  ctx.fillStyle = "#6fcf7a";
-  const foodR = Math.max(1.2, 0.35 * scale);
-  for (const f of food) {
-    ctx.beginPath();
-    ctx.arc(ox + f.x * scale, oy + f.y * scale, foodR, 0, Math.PI * 2);
-    ctx.fill();
-  }
+worldCanvas.addEventListener("click", (e) => {
+  if (!view || dragMoved) return;
+  const rect = worldCanvas.getBoundingClientRect();
+  const sx = e.clientX - rect.left;
+  const sy = e.clientY - rect.top;
 
-  // Creatures.
-  let selected: (typeof creatures)[number] | null = null;
-  for (const c of creatures) {
-    if (c.id === selectedCreatureId) selected = c;
-    const px = ox + c.x * scale;
-    const py = oy + c.y * scale;
-    const r = Math.max(1.5, c.radius * scale);
-    const light = 32 + c.energy * 34;
-    const predator = c.diet >= 0.5;
-    ctx.fillStyle = `hsl(${c.hue} 70% ${light}%)`;
-    ctx.beginPath();
-    ctx.arc(px, py, r, 0, Math.PI * 2);
-    ctx.fill();
-    // Trophic cue: predators get a bold red ring, herbivores a soft light ring.
-    if (predator) {
-      ctx.strokeStyle = "#ff5a5a";
-      ctx.lineWidth = 2;
-    } else {
-      ctx.strokeStyle = `hsl(${c.hue} 75% ${Math.min(88, light + 24)}%)`;
-      ctx.lineWidth = 1;
-    }
-    ctx.stroke();
-    // Infected creatures show a sickly purple ring.
-    if (c.infection > 0.12) {
-      ctx.strokeStyle = `rgba(176,108,255,${0.35 + c.infection * 0.55})`;
-      ctx.lineWidth = 2;
-      ctx.beginPath();
-      ctx.arc(px, py, r + 2, 0, Math.PI * 2);
-      ctx.stroke();
-    }
-    // Heavily plated creatures show a steel ring inside the body.
-    if (c.armor > 0.35 && r > 3) {
-      ctx.strokeStyle = "rgba(200,210,225,0.75)";
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      ctx.arc(px, py, r * 0.55, 0, Math.PI * 2);
-      ctx.stroke();
-    }
-  }
-
-  // Selected creature: highlight ring + a small health bar.
-  if (selected) {
-    const px = ox + selected.x * scale;
-    const py = oy + selected.y * scale;
-    const r = Math.max(1.5, selected.radius * scale);
-    ctx.strokeStyle = "#ffffff";
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.arc(px, py, r + 4, 0, Math.PI * 2);
-    ctx.stroke();
-
-    const barW = Math.max(20, r * 3);
-    const barX = px - barW / 2;
-    const barY = py - r - 10;
-    ctx.fillStyle = "rgba(0,0,0,0.55)";
-    ctx.fillRect(barX - 1, barY - 1, barW + 2, 5);
-    ctx.fillStyle = "#4fd07a";
-    ctx.fillRect(barX, barY, barW * selected.health, 3);
-  }
-
-  drawArenaOverlay(ctx, ox, oy, v.activeStats, selected);
-}
-
-function dietLabel(diet: number): string {
-  if (diet >= 0.66) return "Carnivore";
-  if (diet >= 0.34) return "Omnivore";
-  return "Herbivore";
-}
-
-function drawArenaOverlay(
-  ctx: CanvasRenderingContext2D,
-  ox: number,
-  oy: number,
-  stats: ArenaStats | null,
-  selected:
-    | {
-        id: number;
-        speciesId: number;
-        radius: number;
-        speed: number;
-        effSpeed: number;
-        sense: number;
-        diet: number;
-        armor: number;
-        social: number;
-        fecundity: number;
-        hue: number;
-        energy: number;
-        health: number;
-        age: number;
-        generation: number;
-        mature: boolean;
-        readyToMate: boolean;
-        infection: number;
+  if (isDetailZoom() && view.activeRegionId !== null && view.activeCreatures) {
+    const arena = screenToArena(worldMap, mapCamera, view.activeRegionId, view.arenaSize, sx, sy);
+    if (!arena) return;
+    let picked: number | null = null;
+    let bestD = Infinity;
+    for (const c of view.activeCreatures) {
+      const d = Math.hypot(arena.x - c.x, arena.y - c.y);
+      const reach = c.radius + 0.8;
+      if (d <= reach && d < bestD) {
+        bestD = d;
+        picked = c.id;
       }
-    | null,
-): void {
-  ctx.textAlign = "left";
-  ctx.font = "11px system-ui,sans-serif";
-
-  // Compact population summary line.
-  if (stats) {
-    ctx.fillStyle = "rgba(10,14,20,0.55)";
-    ctx.fillRect(ox + 6, oy + 6, 262, 20);
-    ctx.fillStyle = "#e8ecf4";
-    const carn = (stats.carnivoreFraction * 100).toFixed(0);
-    ctx.fillText(
-      `pop ${stats.population} · species ${stats.speciesCount} · gen ${stats.generation} · carniv. ${carn}%`,
-      ox + 12,
-      oy + 20,
-    );
-  }
-
-  if (!selected) {
-    ctx.fillStyle = "#8b95a8";
-    ctx.fillText("Click a blob to inspect its stats", ox + 12, oy + 42);
+    }
+    selectedCreatureId = picked;
     return;
   }
 
-  const mating = !selected.mature
-    ? "juvenile"
-    : selected.readyToMate
-      ? "seeking mate"
-      : "recovering";
-  const speciesName = speciesById.get(selected.speciesId)?.name ?? "…";
-  const socialLabel =
-    selected.diet >= 0.5
-      ? `${selected.social.toFixed(2)}${selected.social > 0.4 ? " (pack hunter)" : ""}`
-      : `${selected.social.toFixed(2)}${selected.social > 0.4 ? " (herding)" : ""}`;
-  const rows = [
-    ["species", speciesName],
-    ["diet", `${dietLabel(selected.diet)} (${selected.diet.toFixed(2)})`],
-    ["health", selected.health.toFixed(2)],
-    ...(selected.infection > 0.05
-      ? [["infection", selected.infection.toFixed(2)] as [string, string]]
-      : []),
-    ["energy", selected.energy.toFixed(2)],
-    ["size", selected.radius.toFixed(2)],
-    ["speed", `${selected.speed.toFixed(2)} (eff ${selected.effSpeed.toFixed(2)})`],
-    ["sense", selected.sense.toFixed(2)],
-    ["armor", selected.armor.toFixed(2)],
-    ["social", socialLabel],
-    ["litter", selected.fecundity < 0.33 ? "small (K)" : selected.fecundity > 0.66 ? "large (r)" : "medium"],
-    ["age", `${selected.age.toFixed(1)} / 55`],
-    ["gen", String(selected.generation)],
-    ["mating", mating],
-  ];
-  const boxX = ox + 6;
-  const boxY = oy + 32;
-  const boxW = 176;
-  const boxH = 26 + rows.length * 15;
-  ctx.fillStyle = "rgba(8,12,18,0.78)";
-  ctx.fillRect(boxX, boxY, boxW, boxH);
-  ctx.strokeStyle = "rgba(150,180,220,0.35)";
-  ctx.lineWidth = 1;
-  ctx.strokeRect(boxX, boxY, boxW, boxH);
+  const chunkId = chunkAtScreen(worldMap, mapCamera, sx, sy);
+  if (chunkId === null) return;
+  const { w, h } = logicalCanvasSize(worldCanvas);
+  mapCamera = zoomCameraToChunk(worldMap, mapCamera, chunkId, w, h);
+  send({ type: "setActiveRegion", value: chunkId });
+  selectedCreatureId = null;
+  mapHint.textContent = chunkHintText(worldMap, chunkId, view);
+});
 
-  ctx.fillStyle = `hsl(${selected.hue} 70% 55%)`;
-  ctx.beginPath();
-  ctx.arc(boxX + 12, boxY + 14, 5, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.fillStyle = "#e8ecf4";
-  ctx.font = "600 11px system-ui,sans-serif";
-  ctx.fillText(`Creature #${selected.id}`, boxX + 24, boxY + 18);
-
-  ctx.font = "11px system-ui,sans-serif";
-  let y = boxY + 36;
-  for (const [k, v] of rows) {
-    ctx.fillStyle = "#8b95a8";
-    ctx.fillText(k!, boxX + 12, y);
-    ctx.fillStyle = "#dbe3ef";
-    ctx.fillText(v!, boxX + 74, y);
-    y += 15;
-  }
-}
+setTimeout(resetMapCamera, 0);
 
 function speciesColor(hue: number, alive: boolean): string {
   return `hsl(${hue} 70% ${alive ? 58 : 38}%)`;
@@ -582,7 +389,6 @@ function drawHistory(): void {
   const x = (t: number) => padL + ((t - t0) / tSpan) * (w - padL - padR);
   const y = (p: number) => padT + chartH - (p / maxPop) * chartH;
 
-  // Axes.
   ctx.strokeStyle = "#242c3a";
   ctx.lineWidth = 1;
   ctx.beginPath();
@@ -596,7 +402,6 @@ function drawHistory(): void {
   ctx.fillText(String(maxPop), padL - 4, padT + 8);
   ctx.fillText("0", padL - 4, padT + chartH);
 
-  // Total population.
   ctx.strokeStyle = "#4a5568";
   ctx.lineWidth = 1;
   ctx.beginPath();
@@ -609,7 +414,6 @@ function drawHistory(): void {
   }
   ctx.stroke();
 
-  // Per-species lines.
   for (const sp of top) {
     ctx.strokeStyle = speciesColor(sp.hue, true);
     ctx.lineWidth = 1.5;
@@ -633,7 +437,6 @@ function drawHistory(): void {
     ctx.stroke();
   }
 
-  // Legend.
   ctx.font = "10px system-ui,sans-serif";
   ctx.textAlign = "left";
   let lx = padL;
@@ -660,7 +463,6 @@ function drawPhylo(v: ReadonlySimulationView): void {
   const now = Math.max(1e-6, v.summary.simTime);
   const all = speciesList;
 
-  // Show every living species plus the most significant extinct ones.
   const living = all.filter((s) => s.extinctAt === null);
   const extinct = all
     .filter((s) => s.extinctAt !== null)
@@ -686,7 +488,6 @@ function drawPhylo(v: ReadonlySimulationView): void {
     const xStart = x(sp.foundedAt);
     const xEnd = alive ? x(now) : x(sp.extinctAt!);
 
-    // Descent connector to the parent's row.
     if (sp.parentId !== null && rowOf.has(sp.parentId)) {
       const py = rowY(rowOf.get(sp.parentId)!);
       ctx.strokeStyle = "rgba(139,149,168,0.3)";
@@ -730,36 +531,6 @@ function drawPhylo(v: ReadonlySimulationView): void {
   );
 }
 
-// ---------------------------------------------------------------------------
-// Input (arena creature pick)
-// ---------------------------------------------------------------------------
-patchCanvas.addEventListener("click", (e) => {
-  if (!view) return;
-  const creatures = view.activeCreatures;
-  if (!creatures) return;
-  const { w, h } = logicalCanvasSize(patchCanvas);
-  const { scale, ox, oy } = arenaTransform(w, h, view.arenaSize);
-  const rect = patchCanvas.getBoundingClientRect();
-  const px = e.clientX - rect.left;
-  const py = e.clientY - rect.top;
-  let picked: number | null = null;
-  let bestD = Infinity;
-  for (const c of creatures) {
-    const cxp = ox + c.x * scale;
-    const cyp = oy + c.y * scale;
-    const rp = Math.max(4, c.radius * scale);
-    const d = Math.hypot(px - cxp, py - cyp);
-    if (d <= rp + 5 && d < bestD) {
-      bestD = d;
-      picked = c.id;
-    }
-  }
-  selectedCreatureId = picked;
-});
-
-// ---------------------------------------------------------------------------
-// Render loop: draws the latest snapshot from the worker.
-// ---------------------------------------------------------------------------
 function frame(): void {
   if (view) {
     statsEl.innerHTML = `
@@ -770,17 +541,16 @@ function frame(): void {
       <span>Speed <strong>${view.time.speedMultiplier}×</strong>${view.time.paused ? " (paused)" : ""}</span>
     `;
     pauseBtn.textContent = view.time.paused ? "Resume" : "Pause";
-    const onOverview = view.activeRegionId === null;
-    overviewBtn.disabled = onOverview;
-    overviewBtn.classList.toggle("active", onOverview);
+    const atWorldView = !isDetailZoom() && view.activeRegionId === null;
+    overviewBtn.disabled = atWorldView;
+    overviewBtn.classList.toggle("active", atWorldView);
     if (String(view.time.speedMultiplier) !== speedSel.value) {
       speedSel.value = String(view.time.speedMultiplier);
     }
-    drawArena(view);
     drawHistory();
     drawPhylo(view);
   }
-  drawMap(view);
+  drawWorld(view);
   requestAnimationFrame(frame);
 }
 

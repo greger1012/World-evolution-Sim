@@ -18,7 +18,7 @@ The current build scaffolds the **globe / region / time** layer that those syste
 ## What’s here now
 
 - **Core simulation engine** (`@evo-world-sim/core`) — creatures, species, migration, biomes, save/load snapshots
-- **Web UI** (`@evo-world-sim/web`) — Vite + Canvas globe, arena, history, and phylogeny panels
+- **Web UI** (`@evo-world-sim/web`) — Vite + Canvas unified world map (pan/zoom from overview into live regions), history, and phylogeny panels
 - **Web worker** — simulation runs off the main thread so the UI stays responsive at high speed multipliers
 - **Save / load** — full-world snapshots in browser `localStorage` (autosave + manual Save / New world)
 - **Test suite** — Vitest guards determinism, ecosystem behaviour, species tracking, and save fidelity
@@ -70,19 +70,14 @@ Or use the workspace scripts in `package.json` to run web and Electron together.
 
 ## How to use the current UI
 
-1. Watch the **world map** (top-down procedural geography): oceans, coasts, forests, jungles, deserts, tundra, **mountains**, **swamps**, and **rivers**. Drag to pan, scroll to zoom. Brighter green tint marks higher fertility when zoomed in.
-2. **Click land** on the map to open that chunk's **living arena** — the floor is painted from the same map tiles (forests, swamps, mountains, rivers). Creatures pay extra energy and move slower on mountains and swamps.
-2. Use the **speed** dropdown to accelerate or slow time (evolution runs faster at higher multipliers).
-3. **Pause / Resume** to freeze the world state.
-4. **Click a region** on the globe to open its **living arena**: creatures ("blobs") with heritable traits (size, speed, sense, diet) graze plants, flee or hunt each other, breed, and die. Herbivores carry a soft ring; **predators carry a bold red ring**.
-5. **Trait trade-offs** mirror the real world: bigger bodies are slower but take down bigger prey and win defensive struggles (failed attacks injure the attacker); a higher speed gene burns disproportionately more energy; sharper senses cost upkeep. **Armor** blocks and punishes attacks but is heavy and expensive; a **social** gene makes herbivores herd for safety and carnivores **hunt in packs** — regrouping, striking together for a catch bonus, taking down prey too big for a lone hunter, and sharing every kill; a **fecundity** gene picks an r/K strategy (many weak young vs few sturdy ones from a fixed birth pool).
-6. **Reproduction**: creatures mature, then well-fed adults court compatible partners (same trophic type, similar lineage colour) and produce litters via genome crossover + mutation — with a costly asexual fallback for lonely creatures. Lineage-colour compatibility gives soft speciation.
-7. **Click a blob** to select it and read its individual stats (species, diet, health, energy, size, speed + effective speed, sense, age, generation, mating status); the selected blob shows a health bar. Return to the globe with the Globe control.
-8. **Population history** charts world population over time, one coloured line per species, so booms, crashes, and takeovers are visible at a glance.
-9. **Phylogeny** shows every significant species as a lifespan bar (founding → extinction), colour-coded by lineage, with connectors to the parent species it split from. Carnivorous lineages carry a red dot. Species get procedural names (herbivores like *Ryntaella*, carnivores like *Vilodon*).
-10. **A connected world**: each region's side borders lead to its neighbours — crossing is chancy and costs energy, but species genuinely migrate, invade, and spread around the ring. The globe's outer **climate ring** shows each region's temperature (frozen blue → scorching red); regions have biomes (tundra, boreal forest, steppe, temperate forest, jungle, desert) with real metabolic effects — cold punishes small bodies, heat punishes large ones, and climate extremes grow less food.
-11. **Save / New world** — **Save** writes the current world to browser storage (brief “Saved ✓” feedback). The world **autosaves every 30 seconds** and **reloads automatically** on refresh. **New world** clears storage and starts a fresh simulation with a new seed.
-12. **World events** — random **droughts** (wither plants, slow regrowth), **disease** (spreads among neighbours, drains health; purple rings on sick blobs), and **storms** (sudden deaths + climate stress). Active events show as coloured dots on the globe (gold = drought, purple = disease, cyan = storm) and in the region hint line.
+1. **Pan and zoom the world map** — procedural geography with oceans, coasts, forests, mountains, rivers, and lakes. Scroll to zoom, drag to pan.
+2. **Click land** to zoom into that region and watch creatures evolve on the terrain. Scroll out or press **World view** for the full map.
+3. At detail zoom, **click a blob** to inspect its stats (species, diet, health, traits). Predators have a red ring; infected creatures show purple.
+4. Use the **speed** dropdown to accelerate or slow time.
+5. **Pause / Resume** to freeze the world state.
+6. **Population history** and **Phylogeny** panels track species over time (same as before).
+7. **Save / New world** — autosave every 30 seconds; manual save and fresh seeds supported.
+8. **World events** — drought, disease, and storms stress regions (visible on the map at medium zoom).
 
 ## Architecture (web)
 
@@ -145,7 +140,7 @@ Watch mode (package only): `npm run test -w @evo-world-sim/core -- --watch`
 | World events (drought, disease, storm) | Working prototype |
 | 2D procedural world map | Working |
 | Map ↔ sim terrain hookup (Phase B) | Working |
-| Unified zoom map view (Phase C) | Planned |
+| Unified zoom map view (Phase C) | Working |
 
 Feedback and contributions can wait until the core evolution model is further along; the public surface will keep changing.
 
