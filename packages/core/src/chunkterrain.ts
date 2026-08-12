@@ -15,6 +15,7 @@ export const TERRAIN_MOVE_COST: Record<TerrainId, number> = {
   mountain: 3.6,
   swamp: 1.75,
   river: 1.08,
+  lake: 1.2,
 };
 
 /** Sample of terrain at a point in the regional arena. */

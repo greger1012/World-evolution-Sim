@@ -13,6 +13,7 @@ const TERRAIN_COLORS: Record<TerrainId, string> = {
   mountain: "#6b5d52",
   swamp: "#3d5c40",
   river: "#3d8ec9",
+  lake: "#2a6a9e",
 };
 
 export type MapCamera = {

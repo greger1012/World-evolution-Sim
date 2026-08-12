@@ -45,17 +45,77 @@ describe("world map generation", () => {
     expect(terrains.size).toBeGreaterThanOrEqual(5);
 
     let rivers = false;
+    let lakes = false;
     for (const seed of [12345, 42, 999, 2024]) {
       const m = generateWorldMap(seed);
       if (m.tiles.some((t) => t.terrain === "river")) rivers = true;
+      if (m.tiles.some((t) => t.terrain === "lake")) lakes = true;
     }
     expect(rivers).toBe(true);
+    expect(lakes).toBe(true);
 
     const chunkIds = new Set<number>();
     for (const t of map.tiles) {
       if (t.chunkId >= 0) chunkIds.add(t.chunkId);
     }
     expect(chunkIds.size).toBe(MAP_CHUNK_COUNT);
+  });
+
+  it("rivers flow downhill to lakes or ocean", () => {
+    const map = generateWorldMap(4242);
+    const { width, height, tiles } = map;
+    const neighbors = [
+      [0, 1],
+      [1, 0],
+      [0, -1],
+      [-1, 0],
+      [1, 1],
+      [-1, 1],
+      [1, -1],
+      [-1, -1],
+    ];
+
+    const downstream = (x: number, y: number): { x: number; y: number } | null => {
+      const i = y * width + x;
+      const e0 = tiles[i]!.elevation;
+      if (tiles[i]!.terrain === "ocean") return null;
+      let best: { x: number; y: number } | null = null;
+      let bestDrop = 0;
+      for (const [dx, dy] of neighbors) {
+        const nx = x + dx;
+        const ny = y + dy;
+        if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
+        const drop = e0 - tiles[ny * width + nx]!.elevation;
+        if (drop > bestDrop + 1e-5) {
+          bestDrop = drop;
+          best = { x: nx, y: ny };
+        }
+      }
+      return best;
+    };
+
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const t = tiles[y * width + x]!;
+        if (t.terrain !== "river") continue;
+        let cx = x;
+        let cy = y;
+        let steps = 0;
+        let ok = false;
+        while (steps++ < width + height) {
+          const cur = tiles[cy * width + cx]!;
+          if (cur.terrain === "ocean" || cur.terrain === "lake") {
+            ok = true;
+            break;
+          }
+          const next = downstream(cx, cy);
+          if (!next) break;
+          cx = next.x;
+          cy = next.y;
+        }
+        expect(ok).toBe(true);
+      }
+    }
   });
 
   it("summarizes chunk dominant terrain", () => {

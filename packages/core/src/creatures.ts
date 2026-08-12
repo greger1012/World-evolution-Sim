@@ -1,5 +1,6 @@
 import { climateFoodFactor } from "./globe.js";
-import type { BorderEdge, ChunkTerrain } from "./chunkterrain.js";
+import type { BorderEdge, ChunkTerrain, TerrainSample } from "./chunkterrain.js";
+import { TERRAIN_MOVE_COST } from "./chunkterrain.js";
 import type { TerrainId } from "./worldmap.js";
 import type { RegionModifiers } from "./events.js";
 import { DEFAULT_REGION_MODIFIERS } from "./events.js";
@@ -154,6 +155,20 @@ const HEAT_STRESS = 0.06; // energy/sec * heat * size
 // but regional ecologies stay distinct.
 const MIGRATION_CHANCE = 0.07;
 const MIGRATION_COST = 0.06;
+
+// Terrain: creatures avoid costly tiles (mountains, ocean) unless their genome
+// and condition give enough tolerance — evolved mountain specialists can pass.
+const TERRAIN_PROBE_ANGLES = [
+  0,
+  Math.PI / 4,
+  -Math.PI / 4,
+  Math.PI / 2,
+  -Math.PI / 2,
+  (3 * Math.PI) / 4,
+  (-3 * Math.PI) / 4,
+  Math.PI,
+];
+const TERRAIN_STEER_GAIN = 4.2;
 
 // Disease: spreads among neighbours; drains health until cured or death.
 const INFECTION_SPREAD_RADIUS = 2.8;
@@ -358,11 +373,18 @@ export class RegionEcosystem {
     x?: number,
     y?: number,
   ): Creature {
+    let sx = x;
+    let sy = y;
+    if (sx === undefined || sy === undefined) {
+      const p = this.randomCreaturePoint(genome);
+      sx = p.x;
+      sy = p.y;
+    }
     return {
       id: this.nextId(),
       speciesId,
-      x: x ?? this.rng() * this.size,
-      y: y ?? this.rng() * this.size,
+      x: sx,
+      y: sy,
       heading: this.rng() * Math.PI * 2,
       energy,
       health: START_HEALTH,
@@ -396,12 +418,19 @@ export class RegionEcosystem {
   /** Disease outbreak: seed carriers in the population. */
   seedDiseaseOutbreak(severity: number): void {
     const chance = 0.1 + severity * 0.22;
+    let seeded = 0;
     for (const c of this.creatures) {
       if (c.dead || c.infection > 0.05) continue;
       if (this.rng() < chance) {
         c.infection = 0.35 + this.rng() * severity * 0.55;
+        seeded++;
       }
     }
+    if (seeded > 0) return;
+    const live = this.creatures.filter((c) => !c.dead && c.infection <= 0.05);
+    if (live.length === 0) return;
+    live[Math.floor(this.rng() * live.length)]!.infection =
+      0.35 + this.rng() * severity * 0.55;
   }
 
   /** Drought begins: wither a chunk of standing plants. */
@@ -481,6 +510,95 @@ export class RegionEcosystem {
       }
     }
     return { x: this.rng() * this.size, y: this.rng() * this.size, dead: false };
+  }
+
+  /** Spawn location that avoids lethal or unaffordable terrain for this genome. */
+  private randomCreaturePoint(genome: Genome): { x: number; y: number } {
+    const probe = { energy: START_ENERGY, genome } as Creature;
+    for (let attempt = 0; attempt < 20; attempt++) {
+      const x = this.rng() * this.size;
+      const y = this.rng() * this.size;
+      const s = this.sampleAt(x, y);
+      if (!s || s.terrain === "ocean") continue;
+      if (this.terrainDanger(s, this.terrainTolerance(probe)) <= 0) return { x, y };
+    }
+    return { x: this.rng() * this.size, y: this.rng() * this.size };
+  }
+
+  /** Max moveCost multiplier this creature willingly enters (1 = easy ground only). */
+  private terrainTolerance(c: Creature): number {
+    const g = c.genome;
+    const sizeFactor = Math.min(1.4, Math.max(0, (g.size - 0.55) * 0.38));
+    const armorFactor = g.armor * 0.85;
+    const speedFactor = Math.min(0.55, Math.max(0, (g.speed - 1) * 0.14));
+    const energyFactor = Math.min(0.35, Math.max(0, (c.energy - 0.35) * 0.45));
+    return 1 + sizeFactor + armorFactor + speedFactor + energyFactor;
+  }
+
+  /** Positive when the tile is harsher than this creature should tolerate. */
+  private terrainDanger(sample: TerrainSample | null, tolerance: number): number {
+    if (!sample) return 0;
+    if (sample.terrain === "ocean") return TERRAIN_MOVE_COST.ocean;
+    const excess = sample.moveCost - tolerance * 1.15;
+    return excess > 0 ? excess * 1.8 : 0;
+  }
+
+  /** Probe ahead and steer away from terrain this creature cannot handle. */
+  private steerTerrainSafety(c: Creature, dt: number): void {
+    if (!this.terrain) return;
+    const tolerance = this.terrainTolerance(c);
+    const probeDist = Math.min(c.genome.sense * 0.38, this.size * 0.14);
+    let repelX = 0;
+    let repelY = 0;
+    let maxDanger = this.terrainDanger(this.sampleAt(c.x, c.y), tolerance);
+
+    for (const a of TERRAIN_PROBE_ANGLES) {
+      const dir = c.heading + a;
+      const px = c.x + Math.cos(dir) * probeDist;
+      const py = c.y + Math.sin(dir) * probeDist;
+      const danger = this.terrainDanger(this.sampleAt(px, py), tolerance);
+      if (danger <= 0) continue;
+      repelX -= Math.cos(dir) * danger;
+      repelY -= Math.sin(dir) * danger;
+      maxDanger = Math.max(maxDanger, danger);
+    }
+
+    if (maxDanger <= 0) return;
+    if (repelX !== 0 || repelY !== 0) {
+      this.steerToward(c, c.x + repelX, c.y + repelY, dt * TERRAIN_STEER_GAIN * (0.6 + maxDanger * 0.15));
+    } else {
+      c.heading += Math.PI * (this.rng() < 0.5 ? 1 : -1) * Math.min(1, dt * 3);
+    }
+  }
+
+  /** If movement landed on ocean, step back toward passable ground. */
+  private nudgeOffOcean(c: Creature): void {
+    if (!this.terrain) return;
+    if (this.sampleAt(c.x, c.y)?.terrain !== "ocean") return;
+
+    for (let step = 0; step < 10; step++) {
+      c.x -= Math.cos(c.heading) * 1.1;
+      c.y -= Math.sin(c.heading) * 1.1;
+      c.x = clamp(c.x, 0.5, this.size - 0.5);
+      c.y = clamp(c.y, 0.5, this.size - 0.5);
+      if (this.sampleAt(c.x, c.y)?.terrain !== "ocean") return;
+    }
+
+    const cx = this.size * 0.5;
+    const cy = this.size * 0.5;
+    for (let row = 0; row < (this.terrain.rows ?? 1); row++) {
+      for (let col = 0; col < (this.terrain.cols ?? 1); col++) {
+        const cell = this.terrain.cell(col, row);
+        if (cell.terrain === "ocean") continue;
+        const x = ((col + 0.5) / this.terrain.cols) * this.size;
+        const y = ((row + 0.5) / this.terrain.rows) * this.size;
+        c.x = x;
+        c.y = y;
+        return;
+      }
+    }
+    c.x = cx;
+    c.y = cy;
   }
 
   get population(): number {
@@ -945,6 +1063,7 @@ export class RegionEcosystem {
       }
       this.steerCohesion(c, dt);
     }
+    this.steerTerrainSafety(c, dt);
     c.heading += (this.rng() - 0.5) * TURN_JITTER * dt;
   }
 
@@ -954,6 +1073,7 @@ export class RegionEcosystem {
     const borderY =
       edge === "north" ? 0 : edge === "south" ? this.size : c.y;
     const tile = this.sampleAt(borderX, borderY);
+    if (!tile || tile.terrain === "ocean") return false;
     const crossCost = MIGRATION_COST + (tile ? (tile.moveCost - 1) * 0.05 : 0);
     if (this.rng() >= MIGRATION_CHANCE || c.energy <= crossCost) return false;
     c.energy -= crossCost;
@@ -991,6 +1111,7 @@ export class RegionEcosystem {
     }
     c.x = clamp(c.x, 0, this.size);
     c.y = clamp(c.y, 0, this.size);
+    this.nudgeOffOcean(c);
   }
 
   /** Eat plants (herbivory) and/or catch prey (carnivory), scaled by diet. */
