@@ -140,16 +140,31 @@ const FLOW_NEIGHBORS: readonly [number, number][] = [
   [-1, -1],
 ];
 
-/** Flow-direction + accumulation hydrology: rivers drain high→low into lakes or ocean. */
+const LAKE_MIN_BASIN = 28;
+const LAKE_MIN_TILES = 8;
+const LAKE_ELEV_EPS = 0.012;
+const RIVER_STEM_MIN = 32;
+const RIVER_MOUTH_MIN = 48;
+
+function isLandTerrain(t: MapTile): boolean {
+  return t.terrain !== "ocean";
+}
+
+function isRiverBlocker(t: MapTile): boolean {
+  return t.terrain === "mountain" || t.terrain === "snow" || t.terrain === "lake" || t.terrain === "ocean";
+}
+
+/** Flow-direction + accumulation hydrology: major rivers drain into lakes or ocean. */
 function applyHydrology(tiles: MapTile[], width: number, height: number, seed: number): void {
   const n = width * height;
   const downstream = new Int32Array(n).fill(-1);
   const accumulation = new Float64Array(n);
+  const upstream: number[][] = Array.from({ length: n }, () => []);
 
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
       const i = y * width + x;
-      if (tiles[i]!.terrain === "ocean") continue;
+      if (!isLandTerrain(tiles[i]!)) continue;
 
       const e0 = tiles[i]!.elevation;
       let best = -1;
@@ -174,9 +189,14 @@ function applyHydrology(tiles: MapTile[], width: number, height: number, seed: n
     }
   }
 
+  for (let i = 0; i < n; i++) {
+    const d = downstream[i];
+    if (d >= 0) upstream[d]!.push(i);
+  }
+
   const landIdx: number[] = [];
   for (let i = 0; i < n; i++) {
-    if (tiles[i]!.terrain !== "ocean") landIdx.push(i);
+    if (isLandTerrain(tiles[i]!)) landIdx.push(i);
   }
   landIdx.sort((a, b) => tiles[b]!.elevation - tiles[a]!.elevation);
 
@@ -186,29 +206,159 @@ function applyHydrology(tiles: MapTile[], width: number, height: number, seed: n
     if (d >= 0) accumulation[d] += accumulation[i];
   }
 
-  const RIVER_THRESHOLD = 14;
+  const collectBasin = (sink: number): number[] => {
+    const basin: number[] = [];
+    const seen = new Uint8Array(n);
+    const stack = [sink];
+    seen[sink] = 1;
+    while (stack.length) {
+      const i = stack.pop()!;
+      basin.push(i);
+      for (const up of upstream[i]!) {
+        if (seen[up]) continue;
+        seen[up] = 1;
+        stack.push(up);
+      }
+    }
+    return basin;
+  };
 
-  // Inland pits (no downhill neighbour) become lakes.
+  const processedSink = new Uint8Array(n);
   for (const i of landIdx) {
-    if (downstream[i] >= 0) continue;
-    const t = tiles[i]!;
-    if (t.terrain === "mountain" || t.terrain === "snow") continue;
-    t.terrain = "lake";
-    t.richness = tileRichness(t.elevation, Math.min(1, t.moisture + 0.15), t.temperature, "lake");
+    if (downstream[i] >= 0 || processedSink[i]) continue;
+    const basin = collectBasin(i);
+    if (basin.length < LAKE_MIN_BASIN) continue;
+
+    const basinSet = new Set(basin);
+    const sinkElev = tiles[i]!.elevation;
+    const lakeCells = new Set<number>([i]);
+    const queue = [i];
+
+    while (queue.length > 0) {
+      const cur = queue.shift()!;
+      const cx = cur % width;
+      const cy = Math.floor(cur / width);
+      for (const [dx, dy] of FLOW_NEIGHBORS) {
+        const nx = cx + dx;
+        const ny = cy + dy;
+        if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
+        const j = ny * width + nx;
+        if (!basinSet.has(j) || lakeCells.has(j)) continue;
+        const t = tiles[j]!;
+        if (isRiverBlocker(t) && t.terrain !== "coast" && t.terrain !== "plains") continue;
+        if (t.elevation > sinkElev + LAKE_ELEV_EPS) continue;
+        lakeCells.add(j);
+        queue.push(j);
+      }
+    }
+
+    if (lakeCells.size < LAKE_MIN_TILES) continue;
+    for (const j of lakeCells) {
+      const t = tiles[j]!;
+      if (t.terrain === "mountain" || t.terrain === "snow") continue;
+      t.terrain = "lake";
+      t.richness = tileRichness(t.elevation, Math.min(1, t.moisture + 0.15), t.temperature, "lake");
+    }
+    for (const s of basin) processedSink[s] = 1;
   }
 
-  // High-accumulation channels become rivers from high ground to lakes/ocean.
-  for (const i of landIdx) {
-    if (accumulation[i] < RIVER_THRESHOLD) continue;
-    const t = tiles[i]!;
-    if (
-      t.terrain === "mountain" ||
-      t.terrain === "snow" ||
-      t.terrain === "lake" ||
-      t.terrain === "ocean"
-    ) {
-      continue;
+  // Drop tiny lake blobs that read as noise rather than real water bodies.
+  const lakeSeen = new Uint8Array(n);
+  for (let i = 0; i < n; i++) {
+    if (tiles[i]!.terrain !== "lake" || lakeSeen[i]) continue;
+    const blob: number[] = [];
+    const stack = [i];
+    lakeSeen[i] = 1;
+    while (stack.length) {
+      const cur = stack.pop()!;
+      blob.push(cur);
+      const cx = cur % width;
+      const cy = Math.floor(cur / width);
+      for (const [dx, dy] of [
+        [0, 1],
+        [1, 0],
+        [0, -1],
+        [-1, 0],
+      ] as const) {
+        const nx = cx + dx;
+        const ny = cy + dy;
+        if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
+        const j = ny * width + nx;
+        if (lakeSeen[j] || tiles[j]!.terrain !== "lake") continue;
+        lakeSeen[j] = 1;
+        stack.push(j);
+      }
     }
+    if (blob.length >= LAKE_MIN_TILES) continue;
+    for (const j of blob) {
+      const t = tiles[j]!;
+      let nearOcean = false;
+      const cx = j % width;
+      const cy = Math.floor(j / width);
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          if (isOceanAt(tiles, width, height, cx + dx, cy + dy)) nearOcean = true;
+        }
+      }
+      t.terrain = classifyTerrain(t.elevation, t.moisture, t.temperature, nearOcean);
+      t.richness = tileRichness(t.elevation, t.moisture, t.temperature, t.terrain);
+    }
+  }
+
+  const outletKey = (i: number): number => {
+    let cur = i;
+    const seen = new Uint8Array(n);
+    for (let step = 0; step < width + height; step++) {
+      const t = tiles[cur]!;
+      if (t.terrain === "ocean") return cur;
+      if (t.terrain === "lake") return cur;
+      const d = downstream[cur]!;
+      if (d < 0) return cur;
+      if (seen[cur]) return cur;
+      seen[cur] = 1;
+      cur = d;
+    }
+    return cur;
+  };
+
+  const riverMarks = new Uint8Array(n);
+  const carveStem = (mouth: number): void => {
+    let cur = mouth;
+    riverMarks[cur] = 1;
+    for (let step = 0; step < width + height; step++) {
+      let bestUp = -1;
+      let bestAcc = 0;
+      for (const up of upstream[cur]!) {
+        if (accumulation[up]! <= bestAcc) continue;
+        if (outletKey(up) !== outletKey(mouth)) continue;
+        bestAcc = accumulation[up]!;
+        bestUp = up;
+      }
+      if (bestUp < 0 || bestAcc < RIVER_STEM_MIN) break;
+      cur = bestUp;
+      riverMarks[cur] = 1;
+    }
+  };
+
+  const mouthCandidates = new Map<number, number>();
+  for (const i of landIdx) {
+    const d = downstream[i]!;
+    if (d < 0) continue;
+    const out = tiles[d]!.terrain;
+    if (out !== "ocean" && out !== "lake") continue;
+    if (accumulation[i]! < RIVER_MOUTH_MIN) continue;
+    const key = outletKey(i);
+    const prev = mouthCandidates.get(key);
+    if (prev === undefined || accumulation[i]! > accumulation[prev]!) {
+      mouthCandidates.set(key, i);
+    }
+  }
+  for (const mouth of mouthCandidates.values()) carveStem(mouth);
+
+  for (const i of landIdx) {
+    if (!riverMarks[i]) continue;
+    const t = tiles[i]!;
+    if (isRiverBlocker(t)) continue;
     t.terrain = "river";
     t.richness = tileRichness(t.elevation, Math.min(1, t.moisture + 0.2), t.temperature, "river");
   }

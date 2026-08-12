@@ -61,7 +61,7 @@ describe("world map generation", () => {
     expect(chunkIds.size).toBe(MAP_CHUNK_COUNT);
   });
 
-  it("rivers flow downhill to lakes or ocean", () => {
+  it("rivers are sparse main stems that reach lakes or ocean", () => {
     const map = generateWorldMap(4242);
     const { width, height, tiles } = map;
     const neighbors = [
@@ -94,10 +94,12 @@ describe("world map generation", () => {
       return best;
     };
 
+    let rivers = 0;
     for (let y = 0; y < height; y++) {
       for (let x = 0; x < width; x++) {
         const t = tiles[y * width + x]!;
         if (t.terrain !== "river") continue;
+        rivers++;
         let cx = x;
         let cy = y;
         let steps = 0;
@@ -116,6 +118,46 @@ describe("world map generation", () => {
         expect(ok).toBe(true);
       }
     }
+
+    expect(rivers).toBeGreaterThan(20);
+    expect(rivers).toBeLessThan(map.tiles.length * 0.025);
+  });
+
+  it("lakes form multi-tile bodies, not single-tile puddles", () => {
+    const map = generateWorldMap(4242);
+    const seen = new Uint8Array(map.tiles.length);
+    const sizes: number[] = [];
+    for (let y = 0; y < map.height; y++) {
+      for (let x = 0; x < map.width; x++) {
+        const i = y * map.width + x;
+        if (map.tiles[i]!.terrain !== "lake" || seen[i]) continue;
+        let n = 0;
+        const stack = [[x, y]];
+        seen[i] = 1;
+        while (stack.length) {
+          const [cx, cy] = stack.pop()!;
+          n++;
+          for (const [dx, dy] of [
+            [0, 1],
+            [1, 0],
+            [0, -1],
+            [-1, 0],
+          ] as const) {
+            const nx = cx + dx;
+            const ny = cy + dy;
+            if (nx < 0 || ny < 0 || nx >= map.width || ny >= map.height) continue;
+            const j = ny * map.width + nx;
+            if (seen[j] || map.tiles[j]!.terrain !== "lake") continue;
+            seen[j] = 1;
+            stack.push([nx, ny]);
+          }
+        }
+        sizes.push(n);
+      }
+    }
+    expect(sizes.length).toBeGreaterThan(0);
+    expect(Math.min(...sizes)).toBeGreaterThanOrEqual(8);
+    expect(Math.max(...sizes)).toBeGreaterThanOrEqual(12);
   });
 
   it("summarizes chunk dominant terrain", () => {
