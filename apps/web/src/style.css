@@ -186,17 +186,31 @@ canvas {
   position: absolute;
   right: 8px;
   bottom: 8px;
+  z-index: 2;
   width: min(320px, 42%);
   max-height: 42%;
   overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 0.45rem 0.55rem;
   border-radius: 8px;
   border: 1px solid rgba(42, 49, 64, 0.85);
-  background: rgba(8, 12, 18, 0.82);
+  background: rgba(8, 12, 18, 0.92);
   backdrop-filter: blur(6px);
-  pointer-events: none;
+  pointer-events: auto;
+  cursor: default;
   font-size: 0.72rem;
   line-height: 1.35;
+  scrollbar-width: thin;
+  scrollbar-color: #3a4558 transparent;
+}
+
+.drama-feed::-webkit-scrollbar {
+  width: 8px;
+}
+
+.drama-feed::-webkit-scrollbar-thumb {
+  background: #3a4558;
+  border-radius: 4px;
 }
 
 .drama-empty {

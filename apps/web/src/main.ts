@@ -151,6 +151,15 @@ const dramaFx = new DramaFxLayer();
 let followCreature = false;
 let followSpecies = false;
 let pendingFollowSpecies: number | null = null;
+let lastDramaFingerprint = "";
+
+dramaFeedEl.addEventListener(
+  "wheel",
+  (e) => {
+    e.stopPropagation();
+  },
+  { passive: true },
+);
 
 for (const s of speedPresets) {
   const opt = document.createElement("option");
@@ -234,6 +243,7 @@ newBtn.addEventListener("click", () => {
   followSpecies = false;
   pendingFollowSpecies = null;
   dramaFx.reset();
+  lastDramaFingerprint = "";
   const seed = (Date.now() ^ (Math.random() * 0x7fffffff)) >>> 0;
   worldMap = generateWorldMap(seed);
   resetMapCamera();
@@ -340,11 +350,21 @@ function applyFollowCamera(v: ReadonlySimulationView | null): void {
 }
 
 function updateDramaFeed(v: ReadonlySimulationView | null): void {
+  const emptyHtml = `<p class="drama-empty">Watching for hunts, births, speciation…</p>`;
   if (!v || v.recentDrama.length === 0) {
-    dramaFeedEl.innerHTML = `<p class="drama-empty">Watching for hunts, births, speciation…</p>`;
+    if (lastDramaFingerprint !== "empty") {
+      dramaFeedEl.innerHTML = emptyHtml;
+      lastDramaFingerprint = "empty";
+    }
     return;
   }
+
   const rows = v.recentDrama.slice(0, 12);
+  const fingerprint = rows.map((ev) => ev.id).join(",");
+  if (fingerprint === lastDramaFingerprint) return;
+
+  const scrollTop = dramaFeedEl.scrollTop;
+  lastDramaFingerprint = fingerprint;
   dramaFeedEl.innerHTML = rows
     .map((ev) => {
       const hue = ev.hue !== undefined ? `hsl(${ev.hue} 70% 58%)` : "var(--accent)";
@@ -357,6 +377,7 @@ function updateDramaFeed(v: ReadonlySimulationView | null): void {
       </div>`;
     })
     .join("");
+  dramaFeedEl.scrollTop = scrollTop;
 }
 
 function drawWorld(v: ReadonlySimulationView | null): void {
