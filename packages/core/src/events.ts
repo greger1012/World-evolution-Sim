@@ -1,4 +1,5 @@
 import { makeRng, type Rng } from "./creatures.js";
+import type { DramaLog } from "./drama.js";
 import type { RegionEventState } from "./types.js";
 
 export type EventKind = "drought" | "disease" | "storm";
@@ -74,6 +75,7 @@ export class EventScheduler {
     dt: number,
     regionCount: number,
     regions: readonly RegionEcosystemHooks[],
+    drama?: DramaLog,
   ): void {
     this.active = this.active.filter((e) => simTime - e.startedAt < e.duration);
 
@@ -117,6 +119,15 @@ export class EventScheduler {
         eco.applyDroughtStart(severity);
         break;
     }
+
+    const labels = { drought: "Drought", disease: "Disease outbreak", storm: "Storm" } as const;
+    drama?.push({
+      kind,
+      simTime,
+      regionId,
+      severity,
+      message: `${labels[kind]} in chunk ${regionId}`,
+    });
   }
 
   modifiersFor(regionId: number, simTime: number): RegionModifiers {

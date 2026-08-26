@@ -1,6 +1,8 @@
 import { climateFoodFactor } from "./globe.js";
 import type { BorderEdge, ChunkTerrain, TerrainSample } from "./chunkterrain.js";
 import { TERRAIN_MOVE_COST } from "./chunkterrain.js";
+import type { DramaKind } from "./drama.js";
+import type { DramaLog } from "./drama.js";
 import type { TerrainId } from "./worldmap.js";
 import type { RegionModifiers } from "./events.js";
 import { DEFAULT_REGION_MODIFIERS } from "./events.js";
@@ -331,6 +333,8 @@ export class RegionEcosystem {
   private generation = 0;
   private births = 0;
   private deaths = 0;
+  private readonly dramaLog: DramaLog | null;
+  private stepSimTime = 0;
 
   constructor(opts: {
     size: number;
@@ -341,6 +345,7 @@ export class RegionEcosystem {
     maxCreatures: number;
     chunkId?: number;
     terrain?: ChunkTerrain;
+    dramaLog?: DramaLog;
     /** Shared id allocator so ids stay unique across regions (migration). */
     idAlloc: () => number;
   }) {
@@ -352,6 +357,7 @@ export class RegionEcosystem {
     this.rng = makeRng(opts.seed);
     this.maxCreatures = opts.maxCreatures;
     this.nextId = opts.idAlloc;
+    this.dramaLog = opts.dramaLog ?? null;
     this.creatureGrid = new SpatialGrid<Creature>(opts.size, GRID_CELL, GRID_SLACK);
     this.foodGrid = new SpatialGrid<Food>(opts.size, GRID_CELL, GRID_SLACK);
 
@@ -397,6 +403,25 @@ export class RegionEcosystem {
       attackCd: 0,
       infection: 0,
     };
+  }
+
+  private logDrama(
+    kind: DramaKind,
+    simTime: number,
+    message: string,
+    ax: number,
+    ay: number,
+    extra?: { hue?: number; speciesId?: number; severity?: number },
+  ): void {
+    this.dramaLog?.push({
+      kind,
+      simTime,
+      regionId: this.chunkId,
+      message,
+      ax,
+      ay,
+      ...extra,
+    });
   }
 
   /** Storm hits: sudden deaths and plant loss. */
@@ -650,8 +675,9 @@ export class RegionEcosystem {
     this.foodGrid.rebuild(this.food);
   }
 
-  step(dt: number, mods: RegionModifiers = DEFAULT_REGION_MODIFIERS): void {
+  step(dt: number, mods: RegionModifiers = DEFAULT_REGION_MODIFIERS, simTime = 0): void {
     if (dt <= 0) return;
+    this.stepSimTime = simTime;
     // Compact food eaten last step and regrow; new food is inserted into the
     // grid as it spawns, with an occasional rebuild to purge dead references.
     this.food = this.food.filter((f) => !f.dead);
@@ -719,6 +745,12 @@ export class RegionEcosystem {
       if (c.health > maxH) c.health = maxH;
 
       if (c.dead || c.health <= 0 || c.age >= MAX_AGE) {
+        if (!c.dead) {
+          this.logDrama("death", simTime, "A creature perished", c.x, c.y, {
+            hue: c.genome.hue,
+            speciesId: c.speciesId,
+          });
+        }
         c.dead = true;
         this.deaths++;
         continue;
@@ -818,6 +850,13 @@ export class RegionEcosystem {
     );
     for (let i = 0; i < litter; i++) {
       this.birth(crossover(a.genome, b.genome, this.rng), gen, a, childEnergy, newborns);
+    }
+    if (newborns.length > 0) {
+      const n = newborns[newborns.length - 1]!;
+      this.logDrama("birth", this.stepSimTime, `Litter of ${litter} born`, n.x, n.y, {
+        hue: a.genome.hue,
+        speciesId: a.speciesId,
+      });
     }
   }
 
@@ -1079,6 +1118,10 @@ export class RegionEcosystem {
     c.energy -= crossCost;
     c.migrated = true;
     this.emigrants.push({ creature: c, edge });
+    this.logDrama("migration", this.stepSimTime, `Migration ${edge}`, c.x, c.y, {
+      hue: c.genome.hue,
+      speciesId: c.speciesId,
+    });
     return true;
   }
 
@@ -1181,6 +1224,14 @@ export class RegionEcosystem {
           prey.dead = true;
           prey.energy = 0;
           this.deaths++;
+          this.logDrama(
+            "kill",
+            this.stepSimTime,
+            pack > 0 ? "Pack hunt succeeded" : "Predator strike",
+            prey.x,
+            prey.y,
+            { hue: c.genome.hue, speciesId: c.speciesId },
+          );
           if (pack > 0 && c.genome.social > 0.2) {
             // Pack kill: the striker feeds first, packmates share the rest.
             c.energy += raw * (1 - KILL_SHARE) * diet;
@@ -1219,6 +1270,7 @@ export class RegionEcosystem {
         speciesId: c.speciesId,
         x: c.x,
         y: c.y,
+        heading: c.heading,
         radius: c.genome.size,
         hue: c.genome.hue,
         energy: clamp(c.energy / MAX_ENERGY, 0, 1),
@@ -1303,6 +1355,16 @@ export class RegionEcosystem {
       births: this.births,
       deaths: this.deaths,
     };
+  }
+
+  /** Live count for one species in this chunk. */
+  countSpecies(speciesId: number): number {
+    let n = 0;
+    for (const c of this.creatures) {
+      if (c.dead || c.migrated || c.speciesId !== speciesId) continue;
+      n++;
+    }
+    return n;
   }
 
   /** 0–1 ecosystem health: population relative to a reference carrying capacity. */

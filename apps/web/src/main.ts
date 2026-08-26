@@ -14,6 +14,7 @@ import {
   DETAIL_TILE_PX,
   drawInspectOverlay,
   drawUnifiedWorldMap,
+  arenaToWorld,
   mapTileAtScreen,
   MAX_MAP_ZOOM,
   MIN_MAP_ZOOM,
@@ -22,6 +23,7 @@ import {
   zoomCameraToChunk,
   type MapCamera,
 } from "./map-view.js";
+import { DramaFxLayer, dramaKindLabel } from "./drama-fx.js";
 import type { MainToWorker, WorkerToMain } from "./protocol.js";
 
 const SAVE_KEY = "evo-world-sim-save-v1";
@@ -61,6 +63,14 @@ worker.onmessage = (e: MessageEvent<WorkerToMain>) => {
     case "loadFailed":
       localStorage.removeItem(SAVE_KEY);
       break;
+    case "regionForSpecies":
+      if (pendingFollowSpecies === msg.speciesId && msg.regionId !== null) {
+        const { w, h } = logicalCanvasSize(worldCanvas);
+        mapCamera = zoomCameraToChunk(worldMap, mapCamera, msg.regionId, w, h);
+        send({ type: "setActiveRegion", value: msg.regionId });
+      }
+      pendingFollowSpecies = null;
+      break;
   }
 };
 
@@ -91,6 +101,8 @@ app.innerHTML = `
       </label>
       <button type="button" id="pause">Pause</button>
       <button type="button" id="overview" class="active" disabled>World view</button>
+      <button type="button" id="follow-creature" disabled title="Lock camera on selected creature">Follow creature</button>
+      <button type="button" id="follow-species" disabled title="Track a species across the map">Follow species</button>
       <button type="button" id="save" title="Save this world in the browser">Save</button>
       <button type="button" id="new" title="Start a fresh world">New world</button>
     </div>
@@ -101,6 +113,7 @@ app.innerHTML = `
       <p class="hint" id="map-hint">Pan and zoom the map — click land to zoom in and watch evolution.</p>
       <div class="canvas-wrap canvas-wrap-hero">
         <canvas id="world-canvas" width="800" height="520" aria-label="Unified world map"></canvas>
+        <aside class="drama-feed" id="drama-feed" aria-label="Natural history feed"></aside>
       </div>
     </section>
     <section class="panel">
@@ -124,12 +137,20 @@ const statsEl = document.querySelector<HTMLDivElement>("#stats")!;
 const speedSel = document.querySelector<HTMLSelectElement>("#speed")!;
 const pauseBtn = document.querySelector<HTMLButtonElement>("#pause")!;
 const overviewBtn = document.querySelector<HTMLButtonElement>("#overview")!;
+const followCreatureBtn = document.querySelector<HTMLButtonElement>("#follow-creature")!;
+const followSpeciesBtn = document.querySelector<HTMLButtonElement>("#follow-species")!;
 const saveBtn = document.querySelector<HTMLButtonElement>("#save")!;
 const newBtn = document.querySelector<HTMLButtonElement>("#new")!;
 const mapHint = document.querySelector<HTMLParagraphElement>("#map-hint")!;
 const worldCanvas = document.querySelector<HTMLCanvasElement>("#world-canvas")!;
 const historyCanvas = document.querySelector<HTMLCanvasElement>("#history-canvas")!;
 const phyloCanvas = document.querySelector<HTMLCanvasElement>("#phylo-canvas")!;
+const dramaFeedEl = document.querySelector<HTMLElement>("#drama-feed")!;
+
+const dramaFx = new DramaFxLayer();
+let followCreature = false;
+let followSpecies = false;
+let pendingFollowSpecies: number | null = null;
 
 for (const s of speedPresets) {
   const opt = document.createElement("option");
@@ -159,10 +180,48 @@ pauseBtn.addEventListener("click", () => {
 
 overviewBtn.addEventListener("click", () => {
   selectedCreatureId = null;
+  followCreature = false;
+  followSpecies = false;
+  pendingFollowSpecies = null;
   resetMapCamera();
   send({ type: "setActiveRegion", value: null });
   mapHint.textContent = "Pan and zoom the map — click land to zoom in and watch evolution.";
+  updateFollowButtons();
 });
+
+followCreatureBtn.addEventListener("click", () => {
+  if (selectedCreatureId === null) return;
+  followCreature = !followCreature;
+  if (followCreature) followSpecies = false;
+  updateFollowButtons();
+});
+
+followSpeciesBtn.addEventListener("click", () => {
+  const speciesId =
+    selectedCreatureId !== null
+      ? view?.activeCreatures?.find((c) => c.id === selectedCreatureId)?.speciesId
+      : undefined;
+  if (speciesId === undefined) return;
+  followSpecies = !followSpecies;
+  if (followSpecies) {
+    followCreature = false;
+    pendingFollowSpecies = speciesId;
+    send({ type: "findRegionForSpecies", speciesId });
+  } else {
+    pendingFollowSpecies = null;
+  }
+  updateFollowButtons();
+});
+
+function updateFollowButtons(): void {
+  followCreatureBtn.disabled = selectedCreatureId === null;
+  followCreatureBtn.classList.toggle("active", followCreature);
+  const canFollowSpecies =
+    selectedCreatureId !== null &&
+    view?.activeCreatures?.some((c) => c.id === selectedCreatureId) === true;
+  followSpeciesBtn.disabled = !canFollowSpecies;
+  followSpeciesBtn.classList.toggle("active", followSpecies);
+}
 
 saveBtn.addEventListener("click", () => {
   send({ type: "save", reason: "manual" });
@@ -171,11 +230,16 @@ saveBtn.addEventListener("click", () => {
 newBtn.addEventListener("click", () => {
   localStorage.removeItem(SAVE_KEY);
   selectedCreatureId = null;
+  followCreature = false;
+  followSpecies = false;
+  pendingFollowSpecies = null;
+  dramaFx.reset();
   const seed = (Date.now() ^ (Math.random() * 0x7fffffff)) >>> 0;
   worldMap = generateWorldMap(seed);
   resetMapCamera();
   send({ type: "newWorld", seed });
   flashButton(newBtn, "New world ✓");
+  updateFollowButtons();
 });
 
 function resizeCanvas(canvas: HTMLCanvasElement, wrap: HTMLElement): void {
@@ -224,6 +288,7 @@ function isDetailZoom(): boolean {
 }
 
 function syncActiveRegionFromCamera(): void {
+  if (followCreature || followSpecies) return;
   const { w, h } = logicalCanvasSize(worldCanvas);
   if (!isDetailZoom()) {
     if (view?.activeRegionId !== null) {
@@ -239,10 +304,70 @@ function syncActiveRegionFromCamera(): void {
   }
 }
 
+function applyFollowCamera(v: ReadonlySimulationView | null): void {
+  if (!v || v.activeRegionId === null) return;
+  const { w, h } = logicalCanvasSize(worldCanvas);
+  if (mapCamera.zoom < DETAIL_TILE_PX) {
+    mapCamera = zoomCameraToChunk(worldMap, mapCamera, v.activeRegionId, w, h);
+  }
+
+  if (followCreature && selectedCreatureId !== null) {
+    const c = v.activeCreatures?.find((x) => x.id === selectedCreatureId);
+    if (!c) return;
+    const { wx, wy } = arenaToWorld(worldMap, v.activeRegionId, v.arenaSize, c.x, c.y);
+    mapCamera.panX = w / 2 - wx * mapCamera.zoom;
+    mapCamera.panY = h / 2 - wy * mapCamera.zoom;
+    return;
+  }
+
+  if (followSpecies) {
+    const speciesId = v.activeCreatures?.find((c) => c.id === selectedCreatureId)?.speciesId;
+    if (speciesId === undefined) return;
+    const matches = v.activeCreatures?.filter((c) => c.speciesId === speciesId) ?? [];
+    if (matches.length === 0) return;
+    let cx = 0;
+    let cy = 0;
+    for (const c of matches) {
+      cx += c.x;
+      cy += c.y;
+    }
+    cx /= matches.length;
+    cy /= matches.length;
+    const { wx, wy } = arenaToWorld(worldMap, v.activeRegionId, v.arenaSize, cx, cy);
+    mapCamera.panX = w / 2 - wx * mapCamera.zoom;
+    mapCamera.panY = h / 2 - wy * mapCamera.zoom;
+  }
+}
+
+function updateDramaFeed(v: ReadonlySimulationView | null): void {
+  if (!v || v.recentDrama.length === 0) {
+    dramaFeedEl.innerHTML = `<p class="drama-empty">Watching for hunts, births, speciation…</p>`;
+    return;
+  }
+  const rows = v.recentDrama.slice(0, 12);
+  dramaFeedEl.innerHTML = rows
+    .map((ev) => {
+      const hue = ev.hue !== undefined ? `hsl(${ev.hue} 70% 58%)` : "var(--accent)";
+      const where =
+        ev.regionId >= 0 ? `<span class="drama-where">chunk ${ev.regionId}</span>` : "";
+      return `<div class="drama-row" data-kind="${ev.kind}">
+        <span class="drama-tag" style="color:${hue}">${dramaKindLabel(ev.kind)}</span>
+        ${where}
+        <span class="drama-msg">${ev.message}</span>
+      </div>`;
+    })
+    .join("");
+}
+
 function drawWorld(v: ReadonlySimulationView | null): void {
   const ctx = worldCanvas.getContext("2d");
   if (!ctx) return;
   const { w, h } = logicalCanvasSize(worldCanvas);
+  const now = performance.now();
+  if (v) {
+    dramaFx.ingest(v, worldMap, v.arenaSize, now);
+    applyFollowCamera(v);
+  }
   const activeChunk = v?.activeRegionId ?? null;
   const selected = drawUnifiedWorldMap(
     ctx,
@@ -253,7 +378,7 @@ function drawWorld(v: ReadonlySimulationView | null): void {
     v,
     activeChunk,
     hoverChunk,
-    { selectedCreatureId, speciesById },
+    { selectedCreatureId, speciesById, dramaFx, fxNow: now },
   );
 
   if (isDetailZoom() && v?.activeStats) {
@@ -337,6 +462,7 @@ worldCanvas.addEventListener("click", (e) => {
       }
     }
     selectedCreatureId = picked;
+    updateFollowButtons();
     return;
   }
 
@@ -541,9 +667,11 @@ function frame(): void {
       <span>Speed <strong>${view.time.speedMultiplier}×</strong>${view.time.paused ? " (paused)" : ""}</span>
     `;
     pauseBtn.textContent = view.time.paused ? "Resume" : "Pause";
-    const atWorldView = !isDetailZoom() && view.activeRegionId === null;
+    const atWorldView = !isDetailZoom() && view.activeRegionId === null && !followCreature && !followSpecies;
     overviewBtn.disabled = atWorldView;
     overviewBtn.classList.toggle("active", atWorldView);
+    updateFollowButtons();
+    updateDramaFeed(view);
     if (String(view.time.speedMultiplier) !== speedSel.value) {
       speedSel.value = String(view.time.speedMultiplier);
     }

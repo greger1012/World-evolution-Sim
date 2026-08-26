@@ -1,5 +1,6 @@
 import { isPredator, makeRng } from "./creatures.js";
 import type { Creature, Rng } from "./creatures.js";
+import type { DramaLog } from "./drama.js";
 import type { SpeciesRecord } from "./types.js";
 
 /** JSON-safe snapshot of the registry, for save/load. */
@@ -108,6 +109,7 @@ export class SpeciesRegistry {
     trophic: "herbivore" | "carnivore",
     parentId: number | null,
     simTime: number,
+    drama?: DramaLog,
   ): SpeciesRecord {
     const rec: SpeciesRecord = {
       id: this.nextId++,
@@ -121,6 +123,17 @@ export class SpeciesRegistry {
       peakPopulation: 0,
     };
     this.records.set(rec.id, rec);
+    if (parentId !== null && drama) {
+      const parent = this.records.get(parentId);
+      drama.push({
+        kind: "speciation",
+        simTime,
+        regionId: -1,
+        speciesId: rec.id,
+        hue: rec.hue,
+        message: `${rec.name} split from ${parent?.name ?? "ancestor"}`,
+      });
+    }
     return rec;
   }
 
@@ -128,9 +141,9 @@ export class SpeciesRegistry {
    * Bring the registry in sync with the world. Call periodically (sim-time
    * cadence), with every living creature from all regions.
    */
-  refresh(creatures: readonly Creature[], simTime: number): void {
-    this.adoptUntagged(creatures, simTime);
-    this.splitDivergent(creatures, simTime);
+  refresh(creatures: readonly Creature[], simTime: number, drama?: DramaLog): void {
+    this.adoptUntagged(creatures, simTime, drama);
+    this.splitDivergent(creatures, simTime, drama);
 
     // Recount populations and record extinctions.
     const counts = new Map<number, { n: number; hues: number[] }>();
@@ -152,13 +165,27 @@ export class SpeciesRegistry {
         rec.extinctAt = null; // revived tags (e.g. late newborns) stay alive
       } else {
         rec.population = 0;
-        if (rec.extinctAt === null) rec.extinctAt = simTime;
+        if (rec.extinctAt === null) {
+          rec.extinctAt = simTime;
+          drama?.push({
+            kind: "extinction",
+            simTime,
+            regionId: -1,
+            speciesId: rec.id,
+            hue: rec.hue,
+            message: `${rec.name} went extinct`,
+          });
+        }
       }
     }
   }
 
   /** Assign species to creatures with no tag (initial founders, reseeds). */
-  private adoptUntagged(creatures: readonly Creature[], simTime: number): void {
+  private adoptUntagged(
+    creatures: readonly Creature[],
+    simTime: number,
+    drama?: DramaLog,
+  ): void {
     for (const c of creatures) {
       if (c.speciesId >= 0) continue;
       const trophic = isPredator(c.genome) ? "carnivore" : "herbivore";
@@ -172,13 +199,17 @@ export class SpeciesRegistry {
           best = rec;
         }
       }
-      const rec = best ?? this.found(c.genome.hue, trophic, null, simTime);
+      const rec = best ?? this.found(c.genome.hue, trophic, null, simTime, drama);
       c.speciesId = rec.id;
     }
   }
 
   /** Split species whose members have diverged beyond breeding range. */
-  private splitDivergent(creatures: readonly Creature[], simTime: number): void {
+  private splitDivergent(
+    creatures: readonly Creature[],
+    simTime: number,
+    drama?: DramaLog,
+  ): void {
     const members = new Map<number, Creature[]>();
     for (const c of creatures) {
       const list = members.get(c.speciesId);
@@ -203,6 +234,7 @@ export class SpeciesRegistry {
           trophic,
           id,
           simTime,
+          drama,
         );
         for (const c of offshoot) c.speciesId = child.id;
       }
@@ -226,6 +258,7 @@ export class SpeciesRegistry {
           rec.trophic,
           id,
           simTime,
+          drama,
         );
         for (const c of group) c.speciesId = child.id;
       }

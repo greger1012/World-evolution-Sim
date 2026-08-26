@@ -7,6 +7,8 @@ import type {
   WorldMapData,
 } from "@evo-world-sim/core";
 import { chunkTileBounds, summarizeChunk } from "@evo-world-sim/core";
+import { drawEvolvedCreature, drawSocialLinks } from "./creature-render.js";
+import type { DramaFxLayer } from "./drama-fx.js";
 
 const TERRAIN_COLORS: Record<TerrainId, string> = {
   ocean: "#1a3a5c",
@@ -25,6 +27,8 @@ const TERRAIN_COLORS: Record<TerrainId, string> = {
 
 /** Tile size on screen (px) at which creatures/food are drawn on the map. */
 export const DETAIL_TILE_PX = 5.5;
+/** Medium zoom: animated life specks on chunks with population. */
+export const LIFE_TILE_PX = 1.2;
 export const MIN_MAP_ZOOM = 0.35;
 export const MAX_MAP_ZOOM = 36;
 
@@ -183,57 +187,22 @@ function drawCreaturesInWorld(
   const ch = y1 - y0;
   const unit = Math.min(cw, ch) / arenaSize;
 
+  const toWorld = (c: CreatureView) => arenaToWorld(map, chunkId, arenaSize, c.x, c.y);
+  drawSocialLinks(ctx, creatures, toWorld, tilePx);
+
   let selected: CreatureView | null = null;
+  const style = { selectedId, tilePx };
   for (const c of creatures) {
     if (c.id === selectedId) selected = c;
-    const { wx, wy } = arenaToWorld(map, chunkId, arenaSize, c.x, c.y);
-    const r = Math.max(0.08, c.radius * unit);
-    const light = 32 + c.energy * 34;
-    const predator = c.diet >= 0.5;
-
-    ctx.fillStyle = `hsl(${c.hue} 70% ${light}%)`;
-    ctx.beginPath();
-    ctx.arc(wx, wy, r, 0, Math.PI * 2);
-    ctx.fill();
-
-    if (predator) {
-      ctx.strokeStyle = "#ff5a5a";
-      ctx.lineWidth = Math.max(0.08, 2 / tilePx);
-    } else {
-      ctx.strokeStyle = `hsl(${c.hue} 75% ${Math.min(88, light + 24)}%)`;
-      ctx.lineWidth = Math.max(0.05, 1 / tilePx);
-    }
-    ctx.stroke();
-
-    if (c.infection > 0.12) {
-      ctx.strokeStyle = `rgba(176,108,255,${0.35 + c.infection * 0.55})`;
-      ctx.lineWidth = Math.max(0.08, 2 / tilePx);
-      ctx.beginPath();
-      ctx.arc(wx, wy, r + 2 / tilePx, 0, Math.PI * 2);
-      ctx.stroke();
-    }
-
-    if (c.armor > 0.35 && r > 0.15) {
-      ctx.strokeStyle = "rgba(200,210,225,0.75)";
-      ctx.lineWidth = Math.max(0.05, 1 / tilePx);
-      ctx.beginPath();
-      ctx.arc(wx, wy, r * 0.55, 0, Math.PI * 2);
-      ctx.stroke();
-    }
+    const { wx, wy } = toWorld(c);
+    drawEvolvedCreature(ctx, wx, wy, c, unit, style);
   }
 
   if (selected) {
-    const { wx, wy } = arenaToWorld(map, chunkId, arenaSize, selected.x, selected.y);
-    const r = Math.max(0.08, selected.radius * unit);
-    ctx.strokeStyle = "#ffffff";
-    ctx.lineWidth = Math.max(0.1, 2.5 / tilePx);
-    ctx.beginPath();
-    ctx.arc(wx, wy, r + 4 / tilePx, 0, Math.PI * 2);
-    ctx.stroke();
-
-    const barW = Math.max(0.5, r * 3);
+    const barW = Math.max(0.5, selected.radius * unit * 2.2);
+    const { wx, wy } = toWorld(selected);
     const barX = wx - barW / 2;
-    const barY = wy - r - 10 / tilePx;
+    const barY = wy - selected.radius * unit - 10 / tilePx;
     ctx.fillStyle = "rgba(0,0,0,0.55)";
     ctx.fillRect(barX - 0.04, barY - 0.04, barW + 0.08, 0.18);
     ctx.fillStyle = "#4fd07a";
@@ -245,6 +214,40 @@ function drawCreaturesInWorld(
   ctx.strokeRect(x0 + 0.02, y0 + 0.02, cw - 0.04, ch - 0.04);
 
   return selected;
+}
+
+/** Animated specks suggesting life at medium zoom (population-driven). */
+function drawLifeSpecks(
+  ctx: CanvasRenderingContext2D,
+  map: WorldMapData,
+  view: ReadonlySimulationView,
+  simTime: number,
+  tilePx: number,
+): void {
+  const t = simTime * 0.6;
+  for (let chunk = 0; chunk < view.regions.length; chunk++) {
+    const reg = view.regions[chunk];
+    if (!reg || reg.population <= 0) continue;
+    const { x0, y0, x1, y1 } = chunkTileBounds(map, chunk);
+    const cw = x1 - x0;
+    const ch = y1 - y0;
+    const specks = Math.min(14, Math.ceil(reg.population / 4));
+    const carnShare = reg.population > 0 ? reg.carnivores / reg.population : 0;
+    for (let i = 0; i < specks; i++) {
+      const seed = chunk * 9973 + i * 7919;
+      const px = x0 + ((seed * 0.618033) % 1) * cw;
+      const py = y0 + ((seed * 0.381966) % 1) * ch;
+      const wobble = Math.sin(t + seed * 0.01) * 0.15;
+      const sx = px + wobble;
+      const sy = py + Math.cos(t * 1.1 + seed) * 0.12;
+      const predator = i / specks < carnShare;
+      ctx.fillStyle = predator ? "rgba(255,110,110,0.55)" : "rgba(120,220,160,0.5)";
+      const r = Math.max(0.06, 0.22 / tilePx);
+      ctx.beginPath();
+      ctx.arc(sx, sy, r, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
 }
 
 function drawFoodInWorld(
@@ -273,6 +276,8 @@ function drawFoodInWorld(
 export type UnifiedMapDrawOptions = {
   selectedCreatureId: number | null;
   speciesById: Map<number, SpeciesRecord>;
+  dramaFx?: DramaFxLayer | null;
+  fxNow?: number;
 };
 
 /**
@@ -304,6 +309,8 @@ export function drawUnifiedWorldMap(
     view.activeRegionId === activeChunk &&
     view.activeCreatures !== null &&
     view.activeFood !== null;
+
+  const lifeMode = view !== null && tilePx >= LIFE_TILE_PX && tilePx < DETAIL_TILE_PX;
 
   let selectedCreature: CreatureView | null = null;
 
@@ -344,6 +351,9 @@ export function drawUnifiedWorldMap(
         ctx.strokeRect(x0 + 0.5, y0 + 0.5, x1 - x0 - 1, y1 - y0 - 1);
       }
     }
+    if (lifeMode) {
+      drawLifeSpecks(ctx, map, view, view.summary.simTime, tilePx);
+    }
   }
 
   if (detailMode && activeChunk !== null) {
@@ -375,12 +385,18 @@ export function drawUnifiedWorldMap(
 
   ctx.restore();
 
+  if (opts.dramaFx && opts.fxNow !== undefined) {
+    opts.dramaFx.draw(ctx, camera.panX, camera.panY, camera.zoom, opts.fxNow);
+  }
+
   ctx.font = "10px system-ui,sans-serif";
   ctx.fillStyle = "#8b95a8";
   ctx.textAlign = "left";
   const legend = detailMode
-    ? "Detail view — click blobs to inspect · scroll out for world map"
-    : "Drag to pan · scroll to zoom · click land to zoom in";
+    ? "Detail view — click creatures to inspect · Follow modes in header"
+    : lifeMode
+      ? "Life layer — zoom in for evolved creatures and hunts"
+      : "Drag to pan · scroll to zoom · click land to zoom in";
   ctx.fillText(legend, 8, viewH - 8);
   return selectedCreature;
 }
@@ -391,7 +407,7 @@ export function chunkHintText(map: WorldMapData, chunkId: number, view: Readonly
   const eventHint =
     reg && reg.events.length > 0 ? ` · ${reg.events.map((e) => e.kind).join(", ")} active` : "";
   const pop = reg ? ` · ${reg.population} creatures` : "";
-  return `Chunk ${chunkId} · ${summary.dominant} · fertility ${summary.richness.toFixed(2)}${pop}${eventHint} — click a blob to inspect`;
+  return `Chunk ${chunkId} · ${summary.dominant} · fertility ${summary.richness.toFixed(2)}${pop}${eventHint} — click a creature to inspect`;
 }
 
 export function terrainAtCursor(map: WorldMapData, tx: number, ty: number): string {
@@ -429,7 +445,7 @@ export function drawInspectOverlay(
   if (!selected) {
     if (stats) {
       ctx.fillStyle = "#8b95a8";
-      ctx.fillText("Click a blob to inspect its stats", ox + 6, oy + 36);
+      ctx.fillText("Click a creature to inspect its stats", ox + 6, oy + 36);
     }
     return;
   }

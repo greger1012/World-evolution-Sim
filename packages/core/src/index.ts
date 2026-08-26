@@ -13,7 +13,8 @@ export { EvolutionSimulation } from "./simulation.js";
 export type { SavedWorld } from "./simulation.js";
 export { RegionEcosystem, isPredator, makeRng } from "./creatures.js";
 export type { Rng } from "./creatures.js";
-export { SpeciesRegistry } from "./species.js";
+export { DramaLog } from "./drama.js";
+export type { DramaEvent, DramaKind } from "./drama.js";
 export {
   biomeName,
   climateFoodFactor,

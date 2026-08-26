@@ -181,3 +181,55 @@ canvas {
   color: var(--muted);
   padding: 0.25rem 0.35rem 0;
 }
+
+.drama-feed {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  width: min(320px, 42%);
+  max-height: 42%;
+  overflow-y: auto;
+  padding: 0.45rem 0.55rem;
+  border-radius: 8px;
+  border: 1px solid rgba(42, 49, 64, 0.85);
+  background: rgba(8, 12, 18, 0.82);
+  backdrop-filter: blur(6px);
+  pointer-events: none;
+  font-size: 0.72rem;
+  line-height: 1.35;
+}
+
+.drama-empty {
+  margin: 0;
+  color: var(--muted);
+}
+
+.drama-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 0.45rem;
+  align-items: baseline;
+  padding: 0.2rem 0;
+  border-bottom: 1px solid rgba(42, 49, 64, 0.55);
+}
+
+.drama-row:last-child {
+  border-bottom: none;
+}
+
+.drama-tag {
+  font-weight: 600;
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.drama-where {
+  color: var(--muted);
+  font-size: 0.65rem;
+}
+
+.drama-msg {
+  color: #dbe3ef;
+  flex: 1 1 100%;
+}

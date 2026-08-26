@@ -72,12 +72,14 @@ Or use the workspace scripts in `package.json` to run web and Electron together.
 
 1. **Pan and zoom the world map** — procedural geography with oceans, coasts, forests, mountains, rivers, and lakes. Scroll to zoom, drag to pan.
 2. **Click land** to zoom into that region and watch creatures evolve on the terrain. Scroll out or press **World view** for the full map.
-3. At detail zoom, **click a blob** to inspect its stats (species, diet, health, traits). Predators have a red ring; infected creatures show purple.
-4. Use the **speed** dropdown to accelerate or slow time.
-5. **Pause / Resume** to freeze the world state.
-6. **Population history** and **Phylogeny** panels track species over time (same as before).
-7. **Save / New world** — autosave every 30 seconds; manual save and fresh seeds supported.
-8. **World events** — drought, disease, and storms stress regions (visible on the map at medium zoom).
+3. At detail zoom, **click a creature** to inspect its stats (species, diet, health, traits). Predators are wedge-shaped with red outlines; herds show faint green bonds.
+4. Use **Follow creature** / **Follow species** (header) to lock the camera on life in a region.
+5. Watch the **Natural history** feed (map overlay) for hunts, births, speciation, extinctions, and world events — bursts flash on the map.
+6. Use the **speed** dropdown to accelerate or slow time.
+7. **Pause / Resume** to freeze the world state.
+8. **Population history** and **Phylogeny** panels track species over time (same as before).
+9. **Save / New world** — autosave every 30 seconds; manual save and fresh seeds supported.
+10. **World events** — drought, disease, and storms stress regions (visible on the map at medium zoom with animated life specks).
 
 ## Architecture (web)
 
@@ -141,6 +143,8 @@ Watch mode (package only): `npm run test -w @evo-world-sim/core -- --watch`
 | 2D procedural world map | Working |
 | Map ↔ sim terrain hookup (Phase B) | Working |
 | Unified zoom map view (Phase C) | Working |
+| Evolved creature rendering + social bonds (Phase D) | Working |
+| Drama feed, map FX, follow camera (Phase D) | Working |
 
 Feedback and contributions can wait until the core evolution model is further along; the public surface will keep changing.
 

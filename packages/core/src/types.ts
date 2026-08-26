@@ -110,6 +110,8 @@ export type Genome = {
   hue: number;
 };
 
+import type { DramaEvent } from "./drama.js";
+
 /** Per-creature snapshot for rendering + inspecting the active arena. */
 export type CreatureView = {
   /** Stable identity, so the UI can track a selected creature across frames. */
@@ -118,6 +120,8 @@ export type CreatureView = {
   speciesId: number;
   x: number;
   y: number;
+  /** Facing angle in radians (movement / intent direction). */
+  heading: number;
   radius: number;
   hue: number;
   /** 0–1 normalized energy (food reserve) for brightness. */
@@ -196,4 +200,6 @@ export type ReadonlySimulationView = {
   activeTerrain: readonly ArenaTerrainCell[] | null;
   activeTerrainCols: number;
   activeTerrainRows: number;
+  /** Recent noteworthy moments for the natural-history feed and FX. */
+  recentDrama: readonly DramaEvent[];
 };

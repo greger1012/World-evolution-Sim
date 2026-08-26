@@ -1,6 +1,7 @@
 import { RegionEcosystem } from "./creatures.js";
 import type { Creature, EcosystemState } from "./creatures.js";
 import { ChunkTerrain, chunkNeighbors, edgeOpposite } from "./chunkterrain.js";
+import { DramaLog } from "./drama.js";
 import { EventScheduler } from "./events.js";
 import type { EventSchedulerState } from "./events.js";
 import { SpeciesRegistry } from "./species.js";
@@ -45,6 +46,7 @@ export class EvolutionSimulation {
   private readonly ecosystems: RegionEcosystem[];
   private readonly registry: SpeciesRegistry;
   private readonly worldMap: WorldMapData;
+  private readonly drama: DramaLog;
   private events: EventScheduler;
   private idCounter = 1;
   private tick = 0;
@@ -60,6 +62,7 @@ export class EvolutionSimulation {
     this.config = config;
     this.baseSeed = baseSeed;
     this.worldMap = generateWorldMap(baseSeed);
+    this.drama = new DramaLog();
     this.ecosystems = [];
     const idAlloc = () => this.idCounter++;
     for (let i = 0; i < config.regionCount; i++) {
@@ -74,6 +77,7 @@ export class EvolutionSimulation {
           maxCreatures: config.maxCreatures,
           chunkId: i,
           terrain,
+          dramaLog: this.drama,
           idAlloc,
         }),
       );
@@ -107,6 +111,20 @@ export class EvolutionSimulation {
       return;
     }
     if (regionId >= 0 && regionId < this.config.regionCount) this.activeRegionId = regionId;
+  }
+
+  /** Chunk with the largest population of a species (for follow-camera). */
+  findRegionForSpecies(speciesId: number): number | null {
+    let bestId: number | null = null;
+    let best = 0;
+    for (let i = 0; i < this.ecosystems.length; i++) {
+      const n = this.ecosystems[i]!.countSpecies(speciesId);
+      if (n > best) {
+        best = n;
+        bestId = i;
+      }
+    }
+    return best > 0 ? bestId : null;
   }
 
   /** Every species ever recorded (living and extinct), for the phylogeny. */
@@ -251,6 +269,7 @@ export class EvolutionSimulation {
       activeTerrain: activeEco ? activeEco.terrainViews() : null,
       activeTerrainCols: activeEco ? activeEco.terrainCols() : 0,
       activeTerrainRows: activeEco ? activeEco.terrainRows() : 0,
+      recentDrama: this.drama.snapshot(),
     };
   }
 
@@ -276,10 +295,10 @@ export class EvolutionSimulation {
     const n = this.ecosystems.length;
     for (let s = 0; s < steps; s++) {
       const t = this.simTime + s * h;
-      this.events.advance(t, h, n, this.ecosystems);
+      this.events.advance(t, h, n, this.ecosystems, this.drama);
       for (let i = 0; i < n; i++) {
         const mods = this.events.modifiersFor(i, t);
-        this.ecosystems[i]!.step(h, mods);
+        this.ecosystems[i]!.step(h, mods, t);
       }
       // Route border-crossers to orthogonally adjacent chunks on the map grid.
       for (let i = 0; i < n; i++) {
@@ -299,7 +318,7 @@ export class EvolutionSimulation {
     this.tick += 1;
 
     if (this.simTime - this.lastRegistryRefresh >= REGISTRY_REFRESH_INTERVAL) {
-      this.registry.refresh(this.allCreatures(), this.simTime);
+      this.registry.refresh(this.allCreatures(), this.simTime, this.drama);
       this.lastRegistryRefresh = this.simTime;
     }
     if (this.simTime - this.lastHistorySample >= this.historyInterval) {

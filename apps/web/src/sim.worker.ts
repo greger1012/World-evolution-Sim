@@ -58,6 +58,15 @@ self.onmessage = (e: MessageEvent<MainToWorker>) => {
     case "setActiveRegion":
       sim?.setActiveRegion(msg.value);
       break;
+    case "findRegionForSpecies":
+      if (sim) {
+        post({
+          type: "regionForSpecies",
+          speciesId: msg.speciesId,
+          regionId: sim.findRegionForSpecies(msg.speciesId),
+        });
+      }
+      break;
     case "save":
       if (sim) post({ type: "saved", data: sim.serialize(), reason: msg.reason });
       break;
