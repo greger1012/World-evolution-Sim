@@ -73,8 +73,8 @@ Or use the workspace scripts in `package.json` to run web and Electron together.
 1. **Pan and zoom the world map** — procedural geography with oceans, coasts, forests, mountains, rivers, and lakes. Scroll to zoom, drag to pan.
 2. **Click land** to zoom into that region and watch creatures evolve on the terrain. Scroll out or press **World view** for the full map.
 3. At detail zoom, **click a creature** to inspect its stats (species, diet, health, traits). Predators are wedge-shaped with red outlines; herds show faint green bonds.
-4. Use **Follow creature** / **Follow species** (header) to lock the camera on life in a region.
-5. Watch the **Natural history** feed (map overlay) for hunts, births, speciation, extinctions, and world events — bursts flash on the map.
+4. Use **Follow creature** / **Follow species** (header) to lock the camera on life in a region. Follow species auto-hops chunks when the lineage moves on.
+5. Watch the **Natural history** feed (map overlay) for hunts, births, speciation, extinctions, and world events — **click an event to fly the camera there**; bursts flash on the map.
 6. Use the **speed** dropdown to accelerate or slow time.
 7. **Pause / Resume** to freeze the world state.
 8. **Population history** and **Phylogeny** panels track species over time (same as before).
@@ -145,6 +145,7 @@ Watch mode (package only): `npm run test -w @evo-world-sim/core -- --watch`
 | Unified zoom map view (Phase C) | Working |
 | Evolved creature rendering + social bonds (Phase D) | Working |
 | Drama feed, map FX, follow camera (Phase D) | Working |
+| Drama navigation, follow-species hopping, throttled feed (Phase E) | Working |
 
 Feedback and contributions can wait until the core evolution model is further along; the public surface will keep changing.
 

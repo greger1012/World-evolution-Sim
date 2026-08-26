@@ -143,6 +143,21 @@ export function zoomCameraToChunk(
   };
 }
 
+/** Pan so a map-tile-space point sits at the view centre. */
+export function centerCameraOnWorldPoint(
+  camera: MapCamera,
+  wx: number,
+  wy: number,
+  viewW: number,
+  viewH: number,
+): MapCamera {
+  return {
+    ...camera,
+    panX: viewW / 2 - wx * camera.zoom,
+    panY: viewH / 2 - wy * camera.zoom,
+  };
+}
+
 export function drawArenaTerrain(
   ctx: CanvasRenderingContext2D,
   ox: number,

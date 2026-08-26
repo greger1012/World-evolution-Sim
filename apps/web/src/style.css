@@ -218,6 +218,13 @@ canvas {
   color: var(--muted);
 }
 
+.drama-hint {
+  display: block;
+  margin-top: 0.35rem;
+  font-size: 0.65rem;
+  opacity: 0.85;
+}
+
 .drama-row {
   display: flex;
   flex-wrap: wrap;
@@ -225,6 +232,15 @@ canvas {
   align-items: baseline;
   padding: 0.2rem 0;
   border-bottom: 1px solid rgba(42, 49, 64, 0.55);
+  border-radius: 4px;
+}
+
+.drama-row-clickable {
+  cursor: pointer;
+}
+
+.drama-row-clickable:hover {
+  background: rgba(91, 159, 212, 0.12);
 }
 
 .drama-row:last-child {

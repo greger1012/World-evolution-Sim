@@ -2,6 +2,7 @@ import "./style.css";
 import { generateWorldMap, speedPresets } from "@evo-world-sim/core";
 import type {
   HistorySample,
+  DramaEvent,
   ReadonlySimulationView,
   SavedWorld,
   SpeciesRecord,
@@ -15,6 +16,7 @@ import {
   drawInspectOverlay,
   drawUnifiedWorldMap,
   arenaToWorld,
+  centerCameraOnWorldPoint,
   mapTileAtScreen,
   MAX_MAP_ZOOM,
   MIN_MAP_ZOOM,
@@ -64,12 +66,23 @@ worker.onmessage = (e: MessageEvent<WorkerToMain>) => {
       localStorage.removeItem(SAVE_KEY);
       break;
     case "regionForSpecies":
-      if (pendingFollowSpecies === msg.speciesId && msg.regionId !== null) {
+      if (
+        msg.regionId !== null &&
+        (pendingFollowSpecies === msg.speciesId ||
+          pendingRegionHop === msg.speciesId ||
+          pendingDramaNav === msg.speciesId)
+      ) {
         const { w, h } = logicalCanvasSize(worldCanvas);
         mapCamera = zoomCameraToChunk(worldMap, mapCamera, msg.regionId, w, h);
         send({ type: "setActiveRegion", value: msg.regionId });
+        if (pendingDramaNav === msg.speciesId && dramaNavTarget) {
+          mapHint.textContent = dramaNavTarget.message;
+          dramaNavTarget = null;
+        }
       }
-      pendingFollowSpecies = null;
+      if (pendingFollowSpecies === msg.speciesId) pendingFollowSpecies = null;
+      if (pendingRegionHop === msg.speciesId) pendingRegionHop = null;
+      if (pendingDramaNav === msg.speciesId) pendingDramaNav = null;
       break;
   }
 };
@@ -150,8 +163,14 @@ const dramaFeedEl = document.querySelector<HTMLElement>("#drama-feed")!;
 const dramaFx = new DramaFxLayer();
 let followCreature = false;
 let followSpecies = false;
+let followSpeciesId: number | null = null;
 let pendingFollowSpecies: number | null = null;
+let pendingRegionHop: number | null = null;
+let pendingDramaNav: number | null = null;
+let dramaNavTarget: DramaEvent | null = null;
+let lastSpeciesHopRequest = 0;
 let lastDramaFingerprint = "";
+const dramaById = new Map<number, DramaEvent>();
 
 dramaFeedEl.addEventListener(
   "wheel",
@@ -160,6 +179,14 @@ dramaFeedEl.addEventListener(
   },
   { passive: true },
 );
+
+dramaFeedEl.addEventListener("click", (e) => {
+  const row = (e.target as HTMLElement).closest<HTMLElement>(".drama-row-clickable");
+  if (!row || !view) return;
+  const id = Number(row.dataset.eventId);
+  const ev = dramaById.get(id);
+  if (ev) flyToDramaEvent(ev, view.arenaSize);
+});
 
 for (const s of speedPresets) {
   const opt = document.createElement("option");
@@ -191,7 +218,11 @@ overviewBtn.addEventListener("click", () => {
   selectedCreatureId = null;
   followCreature = false;
   followSpecies = false;
+  followSpeciesId = null;
   pendingFollowSpecies = null;
+  pendingRegionHop = null;
+  pendingDramaNav = null;
+  dramaNavTarget = null;
   resetMapCamera();
   send({ type: "setActiveRegion", value: null });
   mapHint.textContent = "Pan and zoom the map — click land to zoom in and watch evolution.";
@@ -214,10 +245,13 @@ followSpeciesBtn.addEventListener("click", () => {
   followSpecies = !followSpecies;
   if (followSpecies) {
     followCreature = false;
+    followSpeciesId = speciesId;
     pendingFollowSpecies = speciesId;
     send({ type: "findRegionForSpecies", speciesId });
   } else {
+    followSpeciesId = null;
     pendingFollowSpecies = null;
+    pendingRegionHop = null;
   }
   updateFollowButtons();
 });
@@ -241,9 +275,14 @@ newBtn.addEventListener("click", () => {
   selectedCreatureId = null;
   followCreature = false;
   followSpecies = false;
+  followSpeciesId = null;
   pendingFollowSpecies = null;
+  pendingRegionHop = null;
+  pendingDramaNav = null;
+  dramaNavTarget = null;
   dramaFx.reset();
   lastDramaFingerprint = "";
+  dramaById.clear();
   const seed = (Date.now() ^ (Math.random() * 0x7fffffff)) >>> 0;
   worldMap = generateWorldMap(seed);
   resetMapCamera();
@@ -314,6 +353,44 @@ function syncActiveRegionFromCamera(): void {
   }
 }
 
+function requestSpeciesRegionHop(speciesId: number): void {
+  const now = performance.now();
+  if (pendingRegionHop !== null || pendingFollowSpecies !== null || now - lastSpeciesHopRequest < 1500) {
+    return;
+  }
+  lastSpeciesHopRequest = now;
+  pendingRegionHop = speciesId;
+  send({ type: "findRegionForSpecies", speciesId });
+}
+
+function flyToDramaEvent(ev: DramaEvent, arenaSize: number): void {
+  followCreature = false;
+  followSpecies = false;
+  followSpeciesId = null;
+  pendingFollowSpecies = null;
+  pendingRegionHop = null;
+  updateFollowButtons();
+
+  if (ev.regionId >= 0) {
+    const { w, h } = logicalCanvasSize(worldCanvas);
+    mapCamera = zoomCameraToChunk(worldMap, mapCamera, ev.regionId, w, h);
+    send({ type: "setActiveRegion", value: ev.regionId });
+    if (ev.ax !== undefined && ev.ay !== undefined) {
+      const { wx, wy } = arenaToWorld(worldMap, ev.regionId, arenaSize, ev.ax, ev.ay);
+      mapCamera = centerCameraOnWorldPoint(mapCamera, wx, wy, w, h);
+    }
+    mapHint.textContent = ev.message;
+    return;
+  }
+
+  if (ev.speciesId !== undefined) {
+    dramaNavTarget = ev;
+    pendingDramaNav = ev.speciesId;
+    send({ type: "findRegionForSpecies", speciesId: ev.speciesId });
+    mapHint.textContent = `${ev.message} — flying to their range…`;
+  }
+}
+
 function applyFollowCamera(v: ReadonlySimulationView | null): void {
   if (!v || v.activeRegionId === null) return;
   const { w, h } = logicalCanvasSize(worldCanvas);
@@ -323,18 +400,22 @@ function applyFollowCamera(v: ReadonlySimulationView | null): void {
 
   if (followCreature && selectedCreatureId !== null) {
     const c = v.activeCreatures?.find((x) => x.id === selectedCreatureId);
-    if (!c) return;
+    if (!c) {
+      followCreature = false;
+      updateFollowButtons();
+      return;
+    }
     const { wx, wy } = arenaToWorld(worldMap, v.activeRegionId, v.arenaSize, c.x, c.y);
-    mapCamera.panX = w / 2 - wx * mapCamera.zoom;
-    mapCamera.panY = h / 2 - wy * mapCamera.zoom;
+    mapCamera = centerCameraOnWorldPoint(mapCamera, wx, wy, w, h);
     return;
   }
 
-  if (followSpecies) {
-    const speciesId = v.activeCreatures?.find((c) => c.id === selectedCreatureId)?.speciesId;
-    if (speciesId === undefined) return;
-    const matches = v.activeCreatures?.filter((c) => c.speciesId === speciesId) ?? [];
-    if (matches.length === 0) return;
+  if (followSpecies && followSpeciesId !== null) {
+    const matches = v.activeCreatures?.filter((c) => c.speciesId === followSpeciesId) ?? [];
+    if (matches.length === 0) {
+      requestSpeciesRegionHop(followSpeciesId);
+      return;
+    }
     let cx = 0;
     let cy = 0;
     for (const c of matches) {
@@ -344,17 +425,17 @@ function applyFollowCamera(v: ReadonlySimulationView | null): void {
     cx /= matches.length;
     cy /= matches.length;
     const { wx, wy } = arenaToWorld(worldMap, v.activeRegionId, v.arenaSize, cx, cy);
-    mapCamera.panX = w / 2 - wx * mapCamera.zoom;
-    mapCamera.panY = h / 2 - wy * mapCamera.zoom;
+    mapCamera = centerCameraOnWorldPoint(mapCamera, wx, wy, w, h);
   }
 }
 
 function updateDramaFeed(v: ReadonlySimulationView | null): void {
-  const emptyHtml = `<p class="drama-empty">Watching for hunts, births, speciation…</p>`;
+  const emptyHtml = `<p class="drama-empty">Watching for hunts, births, speciation…<br><span class="drama-hint">Click an event to fly there</span></p>`;
   if (!v || v.recentDrama.length === 0) {
     if (lastDramaFingerprint !== "empty") {
       dramaFeedEl.innerHTML = emptyHtml;
       lastDramaFingerprint = "empty";
+      dramaById.clear();
     }
     return;
   }
@@ -365,12 +446,17 @@ function updateDramaFeed(v: ReadonlySimulationView | null): void {
 
   const scrollTop = dramaFeedEl.scrollTop;
   lastDramaFingerprint = fingerprint;
+  dramaById.clear();
+  for (const ev of rows) dramaById.set(ev.id, ev);
+
   dramaFeedEl.innerHTML = rows
     .map((ev) => {
       const hue = ev.hue !== undefined ? `hsl(${ev.hue} 70% 58%)` : "var(--accent)";
       const where =
         ev.regionId >= 0 ? `<span class="drama-where">chunk ${ev.regionId}</span>` : "";
-      return `<div class="drama-row" data-kind="${ev.kind}">
+      const clickable =
+        ev.regionId >= 0 || ev.speciesId !== undefined ? " drama-row-clickable" : "";
+      return `<div class="drama-row${clickable}" data-event-id="${ev.id}" data-kind="${ev.kind}">
         <span class="drama-tag" style="color:${hue}">${dramaKindLabel(ev.kind)}</span>
         ${where}
         <span class="drama-msg">${ev.message}</span>

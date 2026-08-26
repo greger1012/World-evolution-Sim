@@ -334,6 +334,9 @@ export class RegionEcosystem {
   private births = 0;
   private deaths = 0;
   private readonly dramaLog: DramaLog | null;
+  /** Throttle noisy death/migration feed entries at high sim speed. */
+  private lastDeathDrama = -Infinity;
+  private lastMigrationDrama = -Infinity;
   private stepSimTime = 0;
 
   constructor(opts: {
@@ -413,7 +416,12 @@ export class RegionEcosystem {
     ay: number,
     extra?: { hue?: number; speciesId?: number; severity?: number },
   ): void {
-    this.dramaLog?.push({
+    if (!this.dramaLog) return;
+    if (kind === "death" && simTime - this.lastDeathDrama < 0.75) return;
+    if (kind === "migration" && simTime - this.lastMigrationDrama < 1.25) return;
+    if (kind === "death") this.lastDeathDrama = simTime;
+    if (kind === "migration") this.lastMigrationDrama = simTime;
+    this.dramaLog.push({
       kind,
       simTime,
       regionId: this.chunkId,
