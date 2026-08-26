@@ -12,6 +12,7 @@ export type MainToWorker =
   | { type: "setPaused"; value: boolean }
   | { type: "setActiveRegion"; value: number | null }
   | { type: "findRegionForSpecies"; speciesId: number }
+  | { type: "findRegionForCreature"; creatureId: number }
   | { type: "save"; reason: "manual" | "auto" }
   | { type: "newWorld"; seed: number };
 
@@ -20,5 +21,6 @@ export type WorkerToMain =
   | { type: "frame"; view: ReadonlySimulationView }
   | { type: "meta"; species: SpeciesRecord[]; history: HistorySample[] }
   | { type: "regionForSpecies"; speciesId: number; regionId: number | null }
+  | { type: "regionForCreature"; creatureId: number; regionId: number | null }
   | { type: "saved"; data: SavedWorld; reason: "manual" | "auto" }
   | { type: "loadFailed" };

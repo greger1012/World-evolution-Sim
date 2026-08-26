@@ -67,6 +67,15 @@ self.onmessage = (e: MessageEvent<MainToWorker>) => {
         });
       }
       break;
+    case "findRegionForCreature":
+      if (sim) {
+        post({
+          type: "regionForCreature",
+          creatureId: msg.creatureId,
+          regionId: sim.findRegionForCreature(msg.creatureId),
+        });
+      }
+      break;
     case "save":
       if (sim) post({ type: "saved", data: sim.serialize(), reason: msg.reason });
       break;

@@ -1375,6 +1375,15 @@ export class RegionEcosystem {
     return n;
   }
 
+  /** Whether a living creature with this id is present in the chunk. */
+  hasCreature(creatureId: number): boolean {
+    for (const c of this.creatures) {
+      if (c.dead || c.migrated || c.id !== creatureId) continue;
+      return true;
+    }
+    return false;
+  }
+
   /** 0–1 ecosystem health: population relative to a reference carrying capacity. */
   biomass(): number {
     const ref = Math.max(8, this.maxCreatures * 0.55);

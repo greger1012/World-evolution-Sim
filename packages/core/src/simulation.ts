@@ -127,6 +127,14 @@ export class EvolutionSimulation {
     return best > 0 ? bestId : null;
   }
 
+  /** Chunk currently holding a creature (for follow-camera across migration). */
+  findRegionForCreature(creatureId: number): number | null {
+    for (let i = 0; i < this.ecosystems.length; i++) {
+      if (this.ecosystems[i]!.hasCreature(creatureId)) return i;
+    }
+    return null;
+  }
+
   /** Every species ever recorded (living and extinct), for the phylogeny. */
   getSpecies(): readonly SpeciesRecord[] {
     return this.registry.all();

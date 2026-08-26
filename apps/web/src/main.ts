@@ -84,6 +84,22 @@ worker.onmessage = (e: MessageEvent<WorkerToMain>) => {
       if (pendingRegionHop === msg.speciesId) pendingRegionHop = null;
       if (pendingDramaNav === msg.speciesId) pendingDramaNav = null;
       break;
+    case "regionForCreature":
+      if (msg.regionId !== null && pendingRegionHopCreature === msg.creatureId) {
+        const { w, h } = logicalCanvasSize(worldCanvas);
+        mapCamera = zoomCameraToChunk(worldMap, mapCamera, msg.regionId, w, h);
+        send({ type: "setActiveRegion", value: msg.regionId });
+      } else if (
+        msg.regionId === null &&
+        pendingRegionHopCreature === msg.creatureId &&
+        followCreature
+      ) {
+        followCreature = false;
+        selectedCreatureId = null;
+        updateFollowButtons();
+      }
+      if (pendingRegionHopCreature === msg.creatureId) pendingRegionHopCreature = null;
+      break;
   }
 };
 
@@ -166,9 +182,11 @@ let followSpecies = false;
 let followSpeciesId: number | null = null;
 let pendingFollowSpecies: number | null = null;
 let pendingRegionHop: number | null = null;
+let pendingRegionHopCreature: number | null = null;
 let pendingDramaNav: number | null = null;
 let dramaNavTarget: DramaEvent | null = null;
 let lastSpeciesHopRequest = 0;
+let lastCreatureHopRequest = 0;
 let lastDramaFingerprint = "";
 const dramaById = new Map<number, DramaEvent>();
 
@@ -221,6 +239,7 @@ overviewBtn.addEventListener("click", () => {
   followSpeciesId = null;
   pendingFollowSpecies = null;
   pendingRegionHop = null;
+  pendingRegionHopCreature = null;
   pendingDramaNav = null;
   dramaNavTarget = null;
   resetMapCamera();
@@ -232,7 +251,16 @@ overviewBtn.addEventListener("click", () => {
 followCreatureBtn.addEventListener("click", () => {
   if (selectedCreatureId === null) return;
   followCreature = !followCreature;
-  if (followCreature) followSpecies = false;
+  if (followCreature) {
+    followSpecies = false;
+    followSpeciesId = null;
+    pendingFollowSpecies = null;
+    pendingRegionHop = null;
+    const inRegion = view?.activeCreatures?.some((c) => c.id === selectedCreatureId) ?? false;
+    if (!inRegion) requestCreatureRegionHop(selectedCreatureId);
+  } else {
+    pendingRegionHopCreature = null;
+  }
   updateFollowButtons();
 });
 
@@ -278,6 +306,7 @@ newBtn.addEventListener("click", () => {
   followSpeciesId = null;
   pendingFollowSpecies = null;
   pendingRegionHop = null;
+  pendingRegionHopCreature = null;
   pendingDramaNav = null;
   dramaNavTarget = null;
   dramaFx.reset();
@@ -363,6 +392,14 @@ function requestSpeciesRegionHop(speciesId: number): void {
   send({ type: "findRegionForSpecies", speciesId });
 }
 
+function requestCreatureRegionHop(creatureId: number): void {
+  const now = performance.now();
+  if (pendingRegionHopCreature !== null || now - lastCreatureHopRequest < 800) return;
+  lastCreatureHopRequest = now;
+  pendingRegionHopCreature = creatureId;
+  send({ type: "findRegionForCreature", creatureId });
+}
+
 function flyToDramaEvent(ev: DramaEvent, arenaSize: number): void {
   followCreature = false;
   followSpecies = false;
@@ -392,17 +429,20 @@ function flyToDramaEvent(ev: DramaEvent, arenaSize: number): void {
 }
 
 function applyFollowCamera(v: ReadonlySimulationView | null): void {
-  if (!v || v.activeRegionId === null) return;
+  if (!v) return;
   const { w, h } = logicalCanvasSize(worldCanvas);
-  if (mapCamera.zoom < DETAIL_TILE_PX) {
-    mapCamera = zoomCameraToChunk(worldMap, mapCamera, v.activeRegionId, w, h);
-  }
 
   if (followCreature && selectedCreatureId !== null) {
+    if (v.activeRegionId === null) {
+      requestCreatureRegionHop(selectedCreatureId);
+      return;
+    }
+    if (mapCamera.zoom < DETAIL_TILE_PX) {
+      mapCamera = zoomCameraToChunk(worldMap, mapCamera, v.activeRegionId, w, h);
+    }
     const c = v.activeCreatures?.find((x) => x.id === selectedCreatureId);
     if (!c) {
-      followCreature = false;
-      updateFollowButtons();
+      requestCreatureRegionHop(selectedCreatureId);
       return;
     }
     const { wx, wy } = arenaToWorld(worldMap, v.activeRegionId, v.arenaSize, c.x, c.y);
@@ -411,6 +451,13 @@ function applyFollowCamera(v: ReadonlySimulationView | null): void {
   }
 
   if (followSpecies && followSpeciesId !== null) {
+    if (v.activeRegionId === null) {
+      requestSpeciesRegionHop(followSpeciesId);
+      return;
+    }
+    if (mapCamera.zoom < DETAIL_TILE_PX) {
+      mapCamera = zoomCameraToChunk(worldMap, mapCamera, v.activeRegionId, w, h);
+    }
     const matches = v.activeCreatures?.filter((c) => c.speciesId === followSpeciesId) ?? [];
     if (matches.length === 0) {
       requestSpeciesRegionHop(followSpeciesId);
