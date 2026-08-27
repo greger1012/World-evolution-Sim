@@ -142,3 +142,22 @@ export function edgeOpposite(edge: BorderEdge): BorderEdge {
       return "north";
   }
 }
+
+/** Map arena coords after crossing an orthogonal chunk border (continuous motion). */
+export function borderCrossArrivalCoords(
+  departEdge: BorderEdge,
+  arenaSize: number,
+  x: number,
+  y: number,
+): { x: number; y: number } {
+  switch (departEdge) {
+    case "west":
+      return { x: arenaSize + x, y };
+    case "east":
+      return { x: x - arenaSize, y };
+    case "north":
+      return { x, y: arenaSize + y };
+    case "south":
+      return { x, y: y - arenaSize };
+  }
+}

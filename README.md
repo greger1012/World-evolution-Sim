@@ -74,7 +74,7 @@ Or use the workspace scripts in `package.json` to run web and Electron together.
 2. **Click land** to zoom into that region and watch creatures evolve on the terrain. Scroll out or press **World view** for the full map.
 3. At detail zoom, **click a creature** to inspect its stats (species, diet, health, traits). Predators are wedge-shaped with red outlines; herds show faint green bonds.
 4. Use **Follow creature** / **Follow species** (header) to lock the camera on life. Creatures cross regions seamlessly — geography (ocean, mountains) is the real barrier, not chunk lines.
-5. Watch the **Natural history** feed (map overlay) for hunts, births, speciation, extinctions, and world events — **click an event to fly the camera there**; migration arcs animate on the map.
+5. Watch the **Natural history** feed (map overlay) for hunts, births, speciation, extinctions, and world events — **click an event to fly the camera there**.
 6. Use the **speed** dropdown to accelerate or slow time.
 7. **Pause / Resume** to freeze the world state.
 8. **Population history** and **Phylogeny** panels track species over time (same as before).

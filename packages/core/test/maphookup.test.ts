@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { TERRAIN_MOVE_COST, chunkNeighbors } from "../src/chunkterrain.js";
+import { TERRAIN_MOVE_COST, borderCrossArrivalCoords, chunkNeighbors } from "../src/chunkterrain.js";
 import { EvolutionSimulation } from "../src/simulation.js";
 import { generateWorldMap } from "../src/worldmap.js";
 import { makeSim, run } from "./helpers.js";
@@ -9,6 +9,22 @@ describe("map ↔ simulation hookup (Phase B)", () => {
     expect(chunkNeighbors(0)).toEqual({ west: null, east: 1, north: null, south: 4 });
     expect(chunkNeighbors(5)).toEqual({ west: 4, east: 6, north: 1, south: 9 });
     expect(chunkNeighbors(23)).toEqual({ west: 22, east: null, north: 19, south: null });
+  });
+
+  it("border crossing maps overflow into the adjacent chunk", () => {
+    const s = 60;
+    const west = borderCrossArrivalCoords("west", s, -0.35, 22);
+    expect(west.x).toBeCloseTo(59.65, 5);
+    expect(west.y).toBe(22);
+    const east = borderCrossArrivalCoords("east", s, 60.4, 10);
+    expect(east.x).toBeCloseTo(0.4, 5);
+    expect(east.y).toBe(10);
+    const north = borderCrossArrivalCoords("north", s, 5, -1.2);
+    expect(north.x).toBe(5);
+    expect(north.y).toBeCloseTo(58.8, 5);
+    const south = borderCrossArrivalCoords("south", s, 40, 61.0);
+    expect(south.x).toBe(40);
+    expect(south.y).toBeCloseTo(1.0, 5);
   });
 
   it("mountains cost more to traverse than plains", () => {

@@ -1,6 +1,7 @@
 export {
   ChunkTerrain,
   TERRAIN_MOVE_COST,
+  borderCrossArrivalCoords,
   chunkNeighbors,
   edgeOpposite,
   tileSample,

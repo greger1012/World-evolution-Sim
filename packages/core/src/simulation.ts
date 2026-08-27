@@ -1,6 +1,6 @@
 import { RegionEcosystem } from "./creatures.js";
 import type { Creature, EcosystemState } from "./creatures.js";
-import { ChunkTerrain, chunkNeighbors, edgeOpposite } from "./chunkterrain.js";
+import { ChunkTerrain, chunkNeighbors } from "./chunkterrain.js";
 import { DramaLog } from "./drama.js";
 import { EventScheduler } from "./events.js";
 import type { EventSchedulerState } from "./events.js";
@@ -330,7 +330,7 @@ export class EvolutionSimulation {
           if (dest === null || dest < 0 || dest >= n) continue;
           this.ecosystems[dest]!.receiveMigrant({
             creature: e.creature,
-            edge: edgeOpposite(e.edge),
+            edge: e.edge,
           });
         }
       }

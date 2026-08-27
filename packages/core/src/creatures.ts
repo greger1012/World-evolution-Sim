@@ -1,6 +1,6 @@
 import { climateFoodFactor } from "./globe.js";
 import type { BorderEdge, ChunkTerrain, TerrainSample } from "./chunkterrain.js";
-import { TERRAIN_MOVE_COST, chunkNeighbors } from "./chunkterrain.js";
+import { TERRAIN_MOVE_COST, borderCrossArrivalCoords, chunkNeighbors } from "./chunkterrain.js";
 import type { DramaKind } from "./drama.js";
 import type { DramaLog } from "./drama.js";
 import type { TerrainId } from "./worldmap.js";
@@ -155,8 +155,7 @@ const HEAT_STRESS = 0.06; // energy/sec * heat * size
 // Migration: a region's left/right edges connect to its neighbours. Crossing
 // is chancy (think mountain passes) and costs energy, so gene flow is real
 // but regional ecologies stay distinct.
-const MIGRATION_CHANCE = 0.07;
-const MIGRATION_COST = 0.06;
+const MIGRATION_COST = 0.04;
 
 // Terrain: creatures avoid costly tiles (mountains, ocean) unless their genome
 // and condition give enough tolerance — evolved mountain specialists can pass.
@@ -496,26 +495,14 @@ export class RegionEcosystem {
     return out;
   }
 
-  /** Accept a creature arriving from a neighbouring chunk. */
+  /** Accept a creature arriving from an orthogonally adjacent chunk. */
   receiveMigrant(e: Emigrant): void {
     const c = e.creature;
     c.migrated = false;
-    switch (e.edge) {
-      case "west":
-        c.x = this.size - 0.5;
-        break;
-      case "east":
-        c.x = 0.5;
-        break;
-      case "north":
-        c.y = this.size - 0.5;
-        break;
-      case "south":
-        c.y = 0.5;
-        break;
-    }
-    c.y = clamp(c.y, 0, this.size);
-    c.x = clamp(c.x, 0, this.size);
+    const s = this.size;
+    const arrived = borderCrossArrivalCoords(e.edge, s, c.x, c.y);
+    c.x = clamp(arrived.x, 0.01, s - 0.01);
+    c.y = clamp(arrived.y, 0.01, s - 0.01);
     this.creatures.push(c);
   }
 
@@ -1121,24 +1108,22 @@ export class RegionEcosystem {
   }
 
   private tryBorderCross(c: Creature, edge: BorderEdge): boolean {
+    const dest = chunkNeighbors(this.chunkId)[edge];
+    if (dest === null) return false;
+
     const borderX =
       edge === "west" ? 0 : edge === "east" ? this.size : c.x;
     const borderY =
       edge === "north" ? 0 : edge === "south" ? this.size : c.y;
     const tile = this.sampleAt(borderX, borderY);
     if (!tile || tile.terrain === "ocean") return false;
-    const crossCost = MIGRATION_COST + (tile ? (tile.moveCost - 1) * 0.05 : 0);
-    if (this.rng() >= MIGRATION_CHANCE || c.energy <= crossCost) return false;
-    const dest = chunkNeighbors(this.chunkId)[edge];
+
+    const crossCost = MIGRATION_COST + (tile.moveCost - 1) * 0.05;
+    if (c.energy <= crossCost) return false;
+
     c.energy -= crossCost;
     c.migrated = true;
     this.emigrants.push({ creature: c, edge });
-    this.logDrama("migration", this.stepSimTime, `Migration ${edge}`, c.x, c.y, {
-      hue: c.genome.hue,
-      speciesId: c.speciesId,
-      migrationEdge: edge,
-      destRegionId: dest ?? undefined,
-    });
     return true;
   }
 
