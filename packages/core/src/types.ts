@@ -86,8 +86,6 @@ export type SimulationConfig = {
   maxSubStepsPerFrame: number;
   /** Creatures seeded into each region at start. */
   initialCreatures: number;
-  /** Hard cap on creatures per region. */
-  maxCreatures: number;
 };
 
 /** Heritable traits. Colors/behaviour derive from these. */

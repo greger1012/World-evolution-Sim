@@ -7,7 +7,6 @@ export const defaultSimulationConfig: SimulationConfig = {
   maxSubStep: 0.2,
   maxSubStepsPerFrame: 24,
   initialCreatures: 16,
-  maxCreatures: 140,
 };
 
 /** UI-oriented speed presets; core accepts any positive multiplier. */

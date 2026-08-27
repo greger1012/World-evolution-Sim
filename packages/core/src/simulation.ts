@@ -79,7 +79,6 @@ export class EvolutionSimulation {
           temperature: terrain.meanTemperature(),
           seed: (baseSeed ^ ((i + 1) * 0x9e3779b1)) >>> 0,
           initialCreatures: config.initialCreatures,
-          maxCreatures: config.maxCreatures,
           chunkId: i,
           terrain,
           allTerrains: terrains,
@@ -183,7 +182,10 @@ export class EvolutionSimulation {
   /** Rebuild a world from a serialize() snapshot with exact-resume fidelity. */
   static restore(saved: SavedWorld): EvolutionSimulation {
     if (saved.version !== 1) throw new Error(`Unsupported save version: ${saved.version}`);
-    const sim = new EvolutionSimulation({ ...saved.config }, saved.seed);
+    const { maxCreatures: _legacyCap, ...config } = saved.config as SimulationConfig & {
+      maxCreatures?: number;
+    };
+    const sim = new EvolutionSimulation(config, saved.seed);
     sim.idCounter = saved.idCounter;
     sim.tick = saved.tick;
     sim.simTime = saved.simTime;

@@ -27,11 +27,10 @@ describe("ecosystem balance (long run @64x)", () => {
   });
 
   it("life persists at plausible scale", () => {
-    const cfg = sim.getConfig();
-    const cap = cfg.regionCount * cfg.maxCreatures;
     for (const p of popSamples) {
       expect(p).toBeGreaterThan(40);
-      expect(p).toBeLessThanOrEqual(cap);
+      // Food-limited per region (~135 plant slots); allow migration overshoot headroom.
+      expect(p).toBeLessThan(sim.getConfig().regionCount * 220);
     }
   });
 

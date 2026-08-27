@@ -301,7 +301,8 @@ function crossover(a: Genome, b: Genome, rng: () => number): Genome {
 
 /**
  * A single region's arena. Plants (food points) regrow toward a carrying
- * capacity; creatures carry heritable genomes (size, speed, sense, diet, hue)
+ * capacity; creature births are limited by local food stores and plant
+ * capacity rather than a hard population cap. Creatures carry heritable genomes (size, speed, sense, diet, hue)
  * and spend energy to move and sense. Herbivores graze plants and flee
  * predators; carnivores hunt. Body size trades off against pace (big = slow)
  * but wins predation struggles on both sides; the speed gene burns extra
@@ -318,7 +319,6 @@ export class RegionEcosystem {
   readonly temperature: number;
   readonly terrain: ChunkTerrain | null;
   private readonly rng: Rng;
-  private readonly maxCreatures: number;
   private readonly nextId: () => number;
   private creatures: Creature[] = [];
   private food: Food[] = [];
@@ -343,7 +343,6 @@ export class RegionEcosystem {
     temperature: number;
     seed: number;
     initialCreatures: number;
-    maxCreatures: number;
     chunkId?: number;
     terrain?: ChunkTerrain;
     allTerrains?: readonly ChunkTerrain[];
@@ -358,7 +357,6 @@ export class RegionEcosystem {
     this.richness = this.terrain?.meanRichness() ?? opts.richness;
     this.temperature = this.terrain?.meanTemperature() ?? opts.temperature;
     this.rng = makeRng(opts.seed);
-    this.maxCreatures = opts.maxCreatures;
     this.nextId = opts.idAlloc;
     this.dramaLog = opts.dramaLog ?? null;
     this.creatureGrid = new SpatialGrid<Creature>(opts.size, GRID_CELL, GRID_SLACK);
@@ -484,6 +482,19 @@ export class RegionEcosystem {
       Math.floor(FOOD_BASE_CAPACITY * this.richness * climateFoodFactor(this.temperature)),
     );
     return Math.max(3, Math.floor(base * mods.foodCapacityMul));
+  }
+
+  private liveFoodCount(): number {
+    let n = 0;
+    for (const f of this.food) if (!f.dead) n++;
+    return n;
+  }
+
+  /** Soft birth budget from plant capacity and current food stores (no hard cap). */
+  private reproductionCeiling(mods: RegionModifiers): number {
+    const cap = this.foodCapacity(mods);
+    const pantry = clamp(this.liveFoodCount() / Math.max(1, cap), 0, 1);
+    return Math.max(6, Math.floor(cap * (0.22 + 0.78 * pantry)));
   }
 
   /** Creatures that crossed a border this step; caller routes them onward. */
@@ -767,7 +778,10 @@ export class RegionEcosystem {
         continue;
       }
 
-      if (this.readyToMate(c) && list.length + newborns.length < this.maxCreatures) {
+      if (
+        this.readyToMate(c) &&
+        list.length + newborns.length < this.reproductionCeiling(mods)
+      ) {
         const mate = this.findMate(c, /*contactOnly*/ true);
         if (mate) {
           this.mate(c, mate, newborns);
@@ -1410,9 +1424,9 @@ export class RegionEcosystem {
     return false;
   }
 
-  /** 0–1 ecosystem health: population relative to a reference carrying capacity. */
+  /** 0–1 ecosystem health: population relative to regional plant carrying capacity. */
   biomass(): number {
-    const ref = Math.max(8, this.maxCreatures * 0.55);
+    const ref = Math.max(8, this.foodCapacity(DEFAULT_REGION_MODIFIERS) * 0.55);
     return clamp(this.creatures.length / ref, 0, 1);
   }
 

@@ -148,6 +148,7 @@ Watch mode (package only): `npm run test -w @evo-world-sim/core -- --watch`
 | Drama navigation, follow-species hopping, throttled feed (Phase E) | Working |
 | Seamless visual world — no chunk borders, cross-region rendering (Phase F) | Working |
 | Geography as real barriers — ocean blocked, mountains/snow need tolerance (Phase G) | Working |
+| Food-limited populations — no hard maxCreatures cap (Phase H) | Working |
 
 Feedback and contributions can wait until the core evolution model is further along; the public surface will keep changing.
 

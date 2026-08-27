@@ -73,7 +73,7 @@ describe("ChunkTerrain sampling", () => {
   it("matches map tile at chunk corner", () => {
     const map = generateWorldMap(100);
     const sim = new EvolutionSimulation(
-      { regionCount: 24, patchSize: 60, baseSimRate: 6, maxSubStep: 0.2, maxSubStepsPerFrame: 24, initialCreatures: 4, maxCreatures: 140 },
+      { regionCount: 24, patchSize: 60, baseSimRate: 6, maxSubStep: 0.2, maxSubStepsPerFrame: 24, initialCreatures: 4 },
       100,
     );
     sim.setActiveRegion(0);
