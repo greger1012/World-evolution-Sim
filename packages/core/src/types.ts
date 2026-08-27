@@ -183,11 +183,19 @@ export type ArenaTerrainCell = {
   richness: number;
 };
 
+/** Per-chunk creature/food snapshots for seamless world rendering. */
+export type RegionLayer = {
+  creatures: readonly CreatureView[];
+  food: readonly FoodView[];
+};
+
 export type ReadonlySimulationView = {
   summary: GlobeSummary;
   regions: readonly RegionState[];
   time: TimeControls;
   activeRegionId: number | null;
+  /** All chunks — used for seamless multi-region rendering. */
+  worldLayers: readonly RegionLayer[];
   /** Creatures in the active region; null when viewing the map overview. */
   activeCreatures: readonly CreatureView[] | null;
   /** Food points in the active region; null when viewing the map overview. */

@@ -11,6 +11,7 @@ import type { WorldMapData } from "./worldmap.js";
 import type {
   HistorySample,
   ReadonlySimulationView,
+  RegionLayer,
   RegionState,
   SimulationConfig,
   SpeciesRecord,
@@ -262,6 +263,17 @@ export class EvolutionSimulation {
       livingSpecies: this.registry.livingCount(),
     };
 
+    const worldLayers: RegionLayer[] = new Array(this.config.regionCount);
+    for (let i = 0; i < this.config.regionCount; i++) {
+      const eco = this.ecosystems[i]!;
+      worldLayers[i] = {
+        creatures: eco.creatureViews(),
+        food: eco.foodViews(),
+      };
+    }
+
+    const activeLayer =
+      this.activeRegionId !== null ? worldLayers[this.activeRegionId]! : null;
     const activeEco =
       this.activeRegionId !== null ? this.ecosystems[this.activeRegionId]! : null;
 
@@ -270,8 +282,9 @@ export class EvolutionSimulation {
       regions,
       time: { ...this.time },
       activeRegionId: this.activeRegionId,
-      activeCreatures: activeEco ? activeEco.creatureViews() : null,
-      activeFood: activeEco ? activeEco.foodViews() : null,
+      worldLayers,
+      activeCreatures: activeLayer?.creatures ?? null,
+      activeFood: activeLayer?.food ?? null,
       activeStats: activeEco ? activeEco.stats() : null,
       arenaSize: this.config.patchSize,
       activeTerrain: activeEco ? activeEco.terrainViews() : null,

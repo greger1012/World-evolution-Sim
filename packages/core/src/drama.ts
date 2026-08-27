@@ -1,3 +1,5 @@
+import type { BorderEdge } from "./chunkterrain.js";
+
 /** A noteworthy moment surfaced to the UI (natural-history feed + visual FX). */
 export type DramaKind =
   | "kill"
@@ -23,6 +25,10 @@ export type DramaEvent = {
   /** Arena coordinates when the moment happened in a region. */
   ax?: number;
   ay?: number;
+  /** Migration: border crossed on the source chunk. */
+  migrationEdge?: BorderEdge;
+  /** Migration: neighbouring chunk the creature entered. */
+  destRegionId?: number;
 };
 
 type DramaInput = Omit<DramaEvent, "id">;

@@ -1,8 +1,9 @@
 import "./style.css";
 import { generateWorldMap, speedPresets } from "@evo-world-sim/core";
 import type {
-  HistorySample,
+  CreatureView,
   DramaEvent,
+  HistorySample,
   ReadonlySimulationView,
   SavedWorld,
   SpeciesRecord,
@@ -23,6 +24,7 @@ import {
   screenToArena,
   terrainAtCursor,
   zoomCameraToChunk,
+  visibleChunkIds,
   type MapCamera,
 } from "./map-view.js";
 import { DramaFxLayer, dramaKindLabel } from "./drama-fx.js";
@@ -216,6 +218,49 @@ speedSel.value = "1";
 
 let selectedCreatureId: number | null = null;
 
+function findCreatureInView(
+  v: ReadonlySimulationView,
+  creatureId: number,
+): { chunkId: number; creature: CreatureView } | null {
+  for (let i = 0; i < v.worldLayers.length; i++) {
+    const layer = v.worldLayers[i]!;
+    const c = layer.creatures.find((x) => x.id === creatureId);
+    if (c) return { chunkId: i, creature: c };
+  }
+  return null;
+}
+
+function pickCreatureAtScreen(
+  v: ReadonlySimulationView,
+  sx: number,
+  sy: number,
+): { id: number; chunkId: number } | null {
+  const { w, h } = logicalCanvasSize(worldCanvas);
+  const visX0 = Math.max(0, Math.floor((0 - mapCamera.panX) / mapCamera.zoom));
+  const visY0 = Math.max(0, Math.floor((0 - mapCamera.panY) / mapCamera.zoom));
+  const visX1 = Math.min(worldMap.width, Math.ceil((w - mapCamera.panX) / mapCamera.zoom));
+  const visY1 = Math.min(worldMap.height, Math.ceil((h - mapCamera.panY) / mapCamera.zoom));
+  const chunks = visibleChunkIds(worldMap, visX0, visY0, visX1, visY1);
+
+  let picked: number | null = null;
+  let pickedChunk: number | null = null;
+  let bestD = Infinity;
+  for (const chunkId of chunks) {
+    const arena = screenToArena(worldMap, mapCamera, chunkId, v.arenaSize, sx, sy);
+    if (!arena) continue;
+    for (const c of v.worldLayers[chunkId]!.creatures) {
+      const d = Math.hypot(arena.x - c.x, arena.y - c.y);
+      const reach = c.radius + 0.8;
+      if (d <= reach && d < bestD) {
+        bestD = d;
+        picked = c.id;
+        pickedChunk = chunkId;
+      }
+    }
+  }
+  return picked !== null && pickedChunk !== null ? { id: picked, chunkId: pickedChunk } : null;
+}
+
 function flashButton(btn: HTMLButtonElement, text: string): void {
   const original = btn.textContent;
   btn.textContent = text;
@@ -256,7 +301,9 @@ followCreatureBtn.addEventListener("click", () => {
     followSpeciesId = null;
     pendingFollowSpecies = null;
     pendingRegionHop = null;
-    const inRegion = view?.activeCreatures?.some((c) => c.id === selectedCreatureId) ?? false;
+    const inRegion =
+      view !== null &&
+      findCreatureInView(view, selectedCreatureId) !== null;
     if (!inRegion) requestCreatureRegionHop(selectedCreatureId);
   } else {
     pendingRegionHopCreature = null;
@@ -266,8 +313,8 @@ followCreatureBtn.addEventListener("click", () => {
 
 followSpeciesBtn.addEventListener("click", () => {
   const speciesId =
-    selectedCreatureId !== null
-      ? view?.activeCreatures?.find((c) => c.id === selectedCreatureId)?.speciesId
+    selectedCreatureId !== null && view
+      ? findCreatureInView(view, selectedCreatureId)?.creature.speciesId
       : undefined;
   if (speciesId === undefined) return;
   followSpecies = !followSpecies;
@@ -289,7 +336,8 @@ function updateFollowButtons(): void {
   followCreatureBtn.classList.toggle("active", followCreature);
   const canFollowSpecies =
     selectedCreatureId !== null &&
-    view?.activeCreatures?.some((c) => c.id === selectedCreatureId) === true;
+    view !== null &&
+    findCreatureInView(view, selectedCreatureId) !== null;
   followSpeciesBtn.disabled = !canFollowSpecies;
   followSpeciesBtn.classList.toggle("active", followSpecies);
 }
@@ -378,7 +426,6 @@ function syncActiveRegionFromCamera(): void {
   if (chunkId === null) return;
   if (view?.activeRegionId !== chunkId) {
     send({ type: "setActiveRegion", value: chunkId });
-    selectedCreatureId = null;
   }
 }
 
@@ -406,6 +453,7 @@ function flyToDramaEvent(ev: DramaEvent, arenaSize: number): void {
   followSpeciesId = null;
   pendingFollowSpecies = null;
   pendingRegionHop = null;
+  pendingRegionHopCreature = null;
   updateFollowButtons();
 
   if (ev.regionId >= 0) {
@@ -433,35 +481,49 @@ function applyFollowCamera(v: ReadonlySimulationView | null): void {
   const { w, h } = logicalCanvasSize(worldCanvas);
 
   if (followCreature && selectedCreatureId !== null) {
-    if (v.activeRegionId === null) {
+    const found = findCreatureInView(v, selectedCreatureId);
+    if (!found) {
       requestCreatureRegionHop(selectedCreatureId);
       return;
+    }
+    if (v.activeRegionId !== found.chunkId) {
+      send({ type: "setActiveRegion", value: found.chunkId });
     }
     if (mapCamera.zoom < DETAIL_TILE_PX) {
-      mapCamera = zoomCameraToChunk(worldMap, mapCamera, v.activeRegionId, w, h);
+      mapCamera = zoomCameraToChunk(worldMap, mapCamera, found.chunkId, w, h);
     }
-    const c = v.activeCreatures?.find((x) => x.id === selectedCreatureId);
-    if (!c) {
-      requestCreatureRegionHop(selectedCreatureId);
-      return;
-    }
-    const { wx, wy } = arenaToWorld(worldMap, v.activeRegionId, v.arenaSize, c.x, c.y);
+    const { wx, wy } = arenaToWorld(
+      worldMap,
+      found.chunkId,
+      v.arenaSize,
+      found.creature.x,
+      found.creature.y,
+    );
     mapCamera = centerCameraOnWorldPoint(mapCamera, wx, wy, w, h);
     return;
   }
 
   if (followSpecies && followSpeciesId !== null) {
-    if (v.activeRegionId === null) {
+    let bestChunk = -1;
+    let bestCount = 0;
+    let matches: CreatureView[] = [];
+    for (let i = 0; i < v.worldLayers.length; i++) {
+      const m = v.worldLayers[i]!.creatures.filter((c) => c.speciesId === followSpeciesId);
+      if (m.length > bestCount) {
+        bestCount = m.length;
+        bestChunk = i;
+        matches = m;
+      }
+    }
+    if (bestCount === 0) {
       requestSpeciesRegionHop(followSpeciesId);
       return;
+    }
+    if (v.activeRegionId !== bestChunk) {
+      send({ type: "setActiveRegion", value: bestChunk });
     }
     if (mapCamera.zoom < DETAIL_TILE_PX) {
-      mapCamera = zoomCameraToChunk(worldMap, mapCamera, v.activeRegionId, w, h);
-    }
-    const matches = v.activeCreatures?.filter((c) => c.speciesId === followSpeciesId) ?? [];
-    if (matches.length === 0) {
-      requestSpeciesRegionHop(followSpeciesId);
-      return;
+      mapCamera = zoomCameraToChunk(worldMap, mapCamera, bestChunk, w, h);
     }
     let cx = 0;
     let cy = 0;
@@ -471,7 +533,7 @@ function applyFollowCamera(v: ReadonlySimulationView | null): void {
     }
     cx /= matches.length;
     cy /= matches.length;
-    const { wx, wy } = arenaToWorld(worldMap, v.activeRegionId, v.arenaSize, cx, cy);
+    const { wx, wy } = arenaToWorld(worldMap, bestChunk, v.arenaSize, cx, cy);
     mapCamera = centerCameraOnWorldPoint(mapCamera, wx, wy, w, h);
   }
 }
@@ -522,7 +584,7 @@ function drawWorld(v: ReadonlySimulationView | null): void {
     dramaFx.ingest(v, worldMap, v.arenaSize, now);
     applyFollowCamera(v);
   }
-  const activeChunk = v?.activeRegionId ?? null;
+  const focusChunk = chunkAtScreen(worldMap, mapCamera, w / 2, h / 2);
   const selected = drawUnifiedWorldMap(
     ctx,
     worldMap,
@@ -530,7 +592,7 @@ function drawWorld(v: ReadonlySimulationView | null): void {
     w,
     h,
     v,
-    activeChunk,
+    focusChunk,
     hoverChunk,
     { selectedCreatureId, speciesById, dramaFx, fxNow: now },
   );
@@ -591,6 +653,8 @@ worldCanvas.addEventListener("mousemove", (e) => {
   hoverChunk = t.chunkId >= 0 ? t.chunkId : null;
   if (isDetailZoom() && view && view.activeRegionId !== null) {
     mapHint.textContent = chunkHintText(worldMap, view.activeRegionId, view);
+  } else if (isDetailZoom()) {
+    mapHint.textContent = "Seamless world — pan freely across landmasses";
   } else {
     mapHint.textContent = terrainAtCursor(worldMap, tile.tx, tile.ty);
   }
@@ -602,22 +666,16 @@ worldCanvas.addEventListener("click", (e) => {
   const sx = e.clientX - rect.left;
   const sy = e.clientY - rect.top;
 
-  if (isDetailZoom() && view.activeRegionId !== null && view.activeCreatures) {
-    const arena = screenToArena(worldMap, mapCamera, view.activeRegionId, view.arenaSize, sx, sy);
-    if (!arena) return;
-    let picked: number | null = null;
-    let bestD = Infinity;
-    for (const c of view.activeCreatures) {
-      const d = Math.hypot(arena.x - c.x, arena.y - c.y);
-      const reach = c.radius + 0.8;
-      if (d <= reach && d < bestD) {
-        bestD = d;
-        picked = c.id;
+  if (isDetailZoom() && view) {
+    const picked = pickCreatureAtScreen(view, sx, sy);
+    if (picked) {
+      selectedCreatureId = picked.id;
+      if (view.activeRegionId !== picked.chunkId) {
+        send({ type: "setActiveRegion", value: picked.chunkId });
       }
+      updateFollowButtons();
+      return;
     }
-    selectedCreatureId = picked;
-    updateFollowButtons();
-    return;
   }
 
   const chunkId = chunkAtScreen(worldMap, mapCamera, sx, sy);

@@ -1,6 +1,6 @@
 import { climateFoodFactor } from "./globe.js";
 import type { BorderEdge, ChunkTerrain, TerrainSample } from "./chunkterrain.js";
-import { TERRAIN_MOVE_COST } from "./chunkterrain.js";
+import { TERRAIN_MOVE_COST, chunkNeighbors } from "./chunkterrain.js";
 import type { DramaKind } from "./drama.js";
 import type { DramaLog } from "./drama.js";
 import type { TerrainId } from "./worldmap.js";
@@ -414,7 +414,13 @@ export class RegionEcosystem {
     message: string,
     ax: number,
     ay: number,
-    extra?: { hue?: number; speciesId?: number; severity?: number },
+    extra?: {
+      hue?: number;
+      speciesId?: number;
+      severity?: number;
+      migrationEdge?: BorderEdge;
+      destRegionId?: number;
+    },
   ): void {
     if (!this.dramaLog) return;
     if (kind === "death" && simTime - this.lastDeathDrama < 0.75) return;
@@ -1123,12 +1129,15 @@ export class RegionEcosystem {
     if (!tile || tile.terrain === "ocean") return false;
     const crossCost = MIGRATION_COST + (tile ? (tile.moveCost - 1) * 0.05 : 0);
     if (this.rng() >= MIGRATION_CHANCE || c.energy <= crossCost) return false;
+    const dest = chunkNeighbors(this.chunkId)[edge];
     c.energy -= crossCost;
     c.migrated = true;
     this.emigrants.push({ creature: c, edge });
     this.logDrama("migration", this.stepSimTime, `Migration ${edge}`, c.x, c.y, {
       hue: c.genome.hue,
       speciesId: c.speciesId,
+      migrationEdge: edge,
+      destRegionId: dest ?? undefined,
     });
     return true;
   }

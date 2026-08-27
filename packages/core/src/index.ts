@@ -45,6 +45,7 @@ export type {
   GlobeSummary,
   HistorySample,
   ReadonlySimulationView,
+  RegionLayer,
   RegionState,
   RegionEventState,
   SimulationConfig,
