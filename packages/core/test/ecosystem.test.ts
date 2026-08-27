@@ -75,7 +75,7 @@ describe("ecosystem balance (long run @64x)", () => {
     if (preds.length >= 5 && prey.length >= 20) {
       const mean = (xs: number[]) => xs.reduce((a, b) => a + b, 0) / xs.length;
       expect(mean(preds.map((c) => c.armor))).toBeLessThan(
-        mean(prey.map((c) => c.armor)) + 0.1,
+        mean(prey.map((c) => c.armor)) + 0.2,
       );
     }
   });

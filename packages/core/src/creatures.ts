@@ -1,6 +1,17 @@
 import { climateFoodFactor } from "./globe.js";
 import type { BorderEdge, ChunkTerrain, TerrainSample } from "./chunkterrain.js";
-import { TERRAIN_MOVE_COST, borderCrossArrivalCoords, chunkNeighbors, isTerrainPassable, tileSample } from "./chunkterrain.js";
+import {
+  PREDATION_HALO,
+  TERRAIN_MOVE_COST,
+  borderCrossArrivalCoords,
+  chunkNeighbors,
+  crossChunkDelta,
+  isTerrainPassable,
+  mapNeighborToLocalCoords,
+  predatorInPredationHalo,
+  preyInPredationHalo,
+  tileSample,
+} from "./chunkterrain.js";
 import type { DramaKind } from "./drama.js";
 import type { DramaLog } from "./drama.js";
 import type { TerrainId } from "./worldmap.js";
@@ -155,6 +166,14 @@ const HEAT_STRESS = 0.06; // energy/sec * heat * size
 // Migration: orthogonal chunk borders only. Geography (ocean, mountains) gates
 // whether a creature can cross; passable borders preserve continuous motion.
 const MIGRATION_COST = 0.04;
+
+type PredationNeighbors = Record<BorderEdge, RegionEcosystem | null>;
+type StrikeTarget = {
+  prey: Creature;
+  home: RegionEcosystem;
+  localX: number;
+  localY: number;
+};
 
 // Terrain: ocean is impassable; harsh land blocks creatures below their tolerance
 // (size, armor, speed, energy) — specialists evolve to cross mountains/snow.
@@ -333,6 +352,12 @@ export class RegionEcosystem {
   private deaths = 0;
   private readonly dramaLog: DramaLog | null;
   private readonly allTerrains: readonly ChunkTerrain[] | null;
+  private predationNeighbors: PredationNeighbors = {
+    west: null,
+    east: null,
+    north: null,
+    south: null,
+  };
   /** Throttle noisy death feed entries at high sim speed. */
   private lastDeathDrama = -Infinity;
   private stepSimTime = 0;
@@ -495,6 +520,30 @@ export class RegionEcosystem {
     const cap = this.foodCapacity(mods);
     const pantry = clamp(this.liveFoodCount() / Math.max(1, cap), 0, 1);
     return Math.max(6, Math.floor(cap * (0.22 + 0.78 * pantry)));
+  }
+
+  /** Wire orthogonally adjacent regions for cross-border hunting and fleeing. */
+  linkPredationNeighbors(neighbors: PredationNeighbors): void {
+    this.predationNeighbors = neighbors;
+  }
+
+  /** Record a kill that happened from a predator in another chunk. */
+  applyPredationKill(
+    prey: Creature,
+    simTime: number,
+    message: string,
+    meta: { hue?: number; speciesId?: number },
+  ): void {
+    if (prey.dead || prey.migrated) return;
+    prey.dead = true;
+    prey.energy = 0;
+    this.deaths++;
+    this.logDrama("kill", simTime, message, prey.x, prey.y, meta);
+  }
+
+  /** Same-species herd size for defence calculations (includes cross-chunk callers). */
+  herdSize(prey: Creature, radius: number): number {
+    return this.groupmates(prey, prey.x, prey.y, radius);
   }
 
   /** Creatures that crossed a border this step; caller routes them onward. */
@@ -954,46 +1003,114 @@ export class RegionEcosystem {
     );
   }
 
-  private nearestPrey(c: Creature): Creature | null {
+  private nearestPrey(c: Creature): { tx: number; ty: number } | null {
     const senseR2 = c.genome.sense * c.genome.sense;
-    // Hunters pick targets they can realistically run down; anything faster
-    // than their sprint is not worth chasing.
     const maxPreySpeed = effectiveSpeed(c.genome) * PREDATOR_SPRINT;
     const pack = this.groupmates(c, c.x, c.y, PACK_RADIUS);
     const sizeLimit = this.maxPreySize(c, pack);
-    let best: Creature | null = null;
     let bestD2 = senseR2;
-    for (const o of this.candidatesNear(c.x, c.y, c.genome.sense)) {
-      if (o === c || o.dead || o.migrated || isPredator(o.genome)) continue;
-      if (o.genome.size > sizeLimit) continue;
-      if (effectiveSpeed(o.genome) > maxPreySpeed) continue;
-      const dx = o.x - c.x;
-      const dy = o.y - c.y;
+    let steer: { tx: number; ty: number } | null = null;
+
+    const consider = (o: Creature, lx: number, ly: number) => {
+      if (o === c || o.dead || o.migrated || isPredator(o.genome)) return;
+      if (o.genome.size > sizeLimit) return;
+      if (effectiveSpeed(o.genome) > maxPreySpeed) return;
+      const dx = lx - c.x;
+      const dy = ly - c.y;
       const d2 = dx * dx + dy * dy;
       if (d2 < bestD2) {
         bestD2 = d2;
-        best = o;
+        steer = { tx: lx, ty: ly };
       }
+    };
+
+    for (const o of this.candidatesNear(c.x, c.y, c.genome.sense)) {
+      consider(o, o.x, o.y);
     }
+    this.forEachCrossChunkCreature(c.x, c.y, c.genome.sense, (o, _home, lx, ly) => {
+      consider(o, lx, ly);
+    });
+    return steer;
+  }
+
+  private nearestPredator(c: Creature): { tx: number; ty: number } | null {
+    const senseR2 = c.genome.sense * c.genome.sense;
+    let bestD2 = senseR2;
+    let steer: { tx: number; ty: number } | null = null;
+
+    const consider = (o: Creature, lx: number, ly: number) => {
+      if (o === c || o.dead || o.migrated || !isPredator(o.genome)) return;
+      if (c.genome.size > o.genome.size * PREY_MAX_RATIO) return;
+      const dx = lx - c.x;
+      const dy = ly - c.y;
+      const d2 = dx * dx + dy * dy;
+      if (d2 < bestD2) {
+        bestD2 = d2;
+        steer = { tx: lx, ty: ly };
+      }
+    };
+
+    for (const o of this.candidatesNear(c.x, c.y, c.genome.sense)) {
+      consider(o, o.x, o.y);
+    }
+    this.forEachCrossChunkCreature(c.x, c.y, c.genome.sense, (o, _home, lx, ly) => {
+      consider(o, lx, ly);
+    });
+    return steer;
+  }
+
+  private findStrikeTarget(c: Creature): StrikeTarget | null {
+    const pack = this.groupmates(c, c.x, c.y, PACK_RADIUS);
+    const sizeLimit = this.maxPreySize(c, pack);
+    const query = c.genome.size + sizeLimit + CATCH_REACH;
+    let best: StrikeTarget | null = null;
+    let bestD2 = Infinity;
+
+    const consider = (o: Creature, home: RegionEcosystem, lx: number, ly: number) => {
+      if (o === c || o.dead || o.migrated || isPredator(o.genome)) return;
+      if (o.genome.size > sizeLimit) return;
+      const contact = c.genome.size + o.genome.size + CATCH_REACH;
+      const dx = lx - c.x;
+      const dy = ly - c.y;
+      const d2 = dx * dx + dy * dy;
+      if (d2 <= contact * contact && d2 < bestD2) {
+        bestD2 = d2;
+        best = { prey: o, home, localX: lx, localY: ly };
+      }
+    };
+
+    for (const o of this.candidatesNear(c.x, c.y, query)) {
+      consider(o, this, o.x, o.y);
+    }
+    this.forEachCrossChunkCreature(c.x, c.y, query, (o, home, lx, ly) => {
+      consider(o, home, lx, ly);
+    });
     return best;
   }
 
-  private nearestPredator(c: Creature): Creature | null {
-    const senseR2 = c.genome.sense * c.genome.sense;
-    let best: Creature | null = null;
-    let bestD2 = senseR2;
-    for (const o of this.candidatesNear(c.x, c.y, c.genome.sense)) {
-      if (o === c || o.dead || o.migrated || !isPredator(o.genome)) continue;
-      if (c.genome.size > o.genome.size * PREY_MAX_RATIO) continue; // too big to be prey
-      const dx = o.x - c.x;
-      const dy = o.y - c.y;
-      const d2 = dx * dx + dy * dy;
-      if (d2 < bestD2) {
-        bestD2 = d2;
-        best = o;
+  /** Scan orthogonally adjacent chunks when this creature is near a border. */
+  private forEachCrossChunkCreature(
+    px: number,
+    py: number,
+    radius: number,
+    cb: (creature: Creature, home: RegionEcosystem, localX: number, localY: number) => void,
+  ): void {
+    const s = this.size;
+    const r2 = radius * radius;
+    const edges: BorderEdge[] = ["west", "east", "north", "south"];
+    for (const edge of edges) {
+      if (!predatorInPredationHalo(edge, px, py, s, PREDATION_HALO)) continue;
+      const neighbor = this.predationNeighbors[edge];
+      if (!neighbor) continue;
+      for (const o of neighbor.creaturesRef()) {
+        if (o.dead || o.migrated) continue;
+        if (!preyInPredationHalo(edge, o.x, o.y, s, PREDATION_HALO)) continue;
+        const { dx, dy } = crossChunkDelta(edge, px, py, o.x, o.y, s);
+        if (dx * dx + dy * dy > r2) continue;
+        const local = mapNeighborToLocalCoords(edge, o.x, o.y, s);
+        cb(o, neighbor, local.x, local.y);
       }
     }
-    return best;
   }
 
   private nearestFood(c: Creature): Food | null {
@@ -1098,17 +1215,17 @@ export class RegionEcosystem {
           return;
         }
       }
-      const prey = this.nearestPrey(c);
-      if (prey) {
-        this.steerToward(c, prey.x, prey.y, dt);
+      const preySteer = this.nearestPrey(c);
+      if (preySteer) {
+        this.steerToward(c, preySteer.tx, preySteer.ty, dt);
         return;
       }
       // No target: social hunters regroup with the pack.
       this.steerCohesion(c, dt);
     } else {
-      const threat = this.nearestPredator(c);
-      if (threat) {
-        this.steerAway(c, threat.x, threat.y, dt);
+      const threatSteer = this.nearestPredator(c);
+      if (threatSteer) {
+        this.steerAway(c, threatSteer.tx, threatSteer.ty, dt);
         return;
       }
       if (this.readyToMate(c)) {
@@ -1231,23 +1348,9 @@ export class RegionEcosystem {
     // big prey usually win the struggle, escape, and can injure the attacker.
     if (diet > 0.05 && c.attackCd <= 0) {
       const pack = this.groupmates(c, c.x, c.y, PACK_RADIUS);
-      const sizeLimit = this.maxPreySize(c, pack);
-      const query = c.genome.size + sizeLimit + CATCH_REACH;
-      let prey: Creature | null = null;
-      let bestD2 = Infinity;
-      for (const o of this.candidatesNear(c.x, c.y, query)) {
-        if (o === c || o.dead || o.migrated || isPredator(o.genome)) continue;
-        if (o.genome.size > sizeLimit) continue;
-        const dx = o.x - c.x;
-        const dy = o.y - c.y;
-        const contact = c.genome.size + o.genome.size + CATCH_REACH;
-        const d2 = dx * dx + dy * dy;
-        if (d2 <= contact * contact && d2 < bestD2) {
-          bestD2 = d2;
-          prey = o;
-        }
-      }
-      if (prey) {
+      const strike = this.findStrikeTarget(c);
+      if (strike) {
+        const { prey, home: preyHome, localX, localY } = strike;
         c.attackCd = ATTACK_COOLDOWN;
         c.energy -= ATTACK_COST;
         if (c.energy < 0) c.energy = 0;
@@ -1257,9 +1360,8 @@ export class RegionEcosystem {
           CATCH_MIN_CHANCE,
           CATCH_MAX_CHANCE,
         );
-        // Plating blocks; herds confuse; packs overwhelm.
         chance *= 1 - ARMOR_DEFENSE * prey.genome.armor;
-        const herd = this.groupmates(prey, prey.x, prey.y, HERD_RADIUS);
+        const herd = preyHome.herdSize(prey, HERD_RADIUS);
         chance *= 1 - Math.min(0.4, HERD_DEFENSE * prey.genome.social * herd);
         chance *= 1 + PACK_BONUS * c.genome.social * Math.min(4, pack);
         chance = clamp(chance, 0.02, 0.97);
@@ -1269,19 +1371,18 @@ export class RegionEcosystem {
             MEAT_ENERGY_CAP,
             MEAT_ENERGY_K * prey.genome.size + 0.5 * prey.energy,
           );
-          prey.dead = true;
-          prey.energy = 0;
-          this.deaths++;
-          this.logDrama(
-            "kill",
-            this.stepSimTime,
-            pack > 0 ? "Pack hunt succeeded" : "Predator strike",
-            prey.x,
-            prey.y,
-            { hue: c.genome.hue, speciesId: c.speciesId },
-          );
+          const crossChunk = preyHome !== this;
+          const killMsg =
+            pack > 0
+              ? "Pack hunt succeeded"
+              : crossChunk
+                ? "Cross-border strike"
+                : "Predator strike";
+          preyHome.applyPredationKill(prey, this.stepSimTime, killMsg, {
+            hue: c.genome.hue,
+            speciesId: c.speciesId,
+          });
           if (pack > 0 && c.genome.social > 0.2) {
-            // Pack kill: the striker feeds first, packmates share the rest.
             c.energy += raw * (1 - KILL_SHARE) * diet;
             const share = (raw * KILL_SHARE) / pack;
             const pr2 = PACK_RADIUS * PACK_RADIUS;
@@ -1298,12 +1399,11 @@ export class RegionEcosystem {
             c.energy += raw * diet;
           }
         } else {
-          // The prey fights free: big and armored prey punish the attacker.
           c.health -=
             STRUGGLE_INJURY *
             (prey.genome.size / c.genome.size) *
             (1 + ARMOR_SPIKE * prey.genome.armor);
-          prey.heading = Math.atan2(prey.y - c.y, prey.x - c.x);
+          prey.heading = Math.atan2(prey.y - localY, prey.x - localX);
         }
       }
     }

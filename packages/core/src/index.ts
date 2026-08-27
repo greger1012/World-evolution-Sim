@@ -1,10 +1,15 @@
 export {
   ChunkTerrain,
+  PREDATION_HALO,
   TERRAIN_MOVE_COST,
   borderCrossArrivalCoords,
   chunkNeighbors,
+  crossChunkDelta,
   edgeOpposite,
   isTerrainPassable,
+  mapNeighborToLocalCoords,
+  predatorInPredationHalo,
+  preyInPredationHalo,
   tileSample,
 } from "./chunkterrain.js";
 export type { BorderEdge, TerrainSample } from "./chunkterrain.js";

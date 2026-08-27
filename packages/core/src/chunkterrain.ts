@@ -149,6 +149,88 @@ export function edgeOpposite(edge: BorderEdge): BorderEdge {
   }
 }
 
+/** Band width at chunk borders where predators and prey can interact across regions. */
+export const PREDATION_HALO = 10;
+
+export function predatorInPredationHalo(
+  edge: BorderEdge,
+  x: number,
+  y: number,
+  size: number,
+  halo = PREDATION_HALO,
+): boolean {
+  switch (edge) {
+    case "west":
+      return x <= halo;
+    case "east":
+      return x >= size - halo;
+    case "north":
+      return y <= halo;
+    case "south":
+      return y >= size - halo;
+  }
+}
+
+/** Whether prey sits on the neighbour strip that faces this chunk across `edge`. */
+export function preyInPredationHalo(
+  edge: BorderEdge,
+  x: number,
+  y: number,
+  size: number,
+  halo = PREDATION_HALO,
+): boolean {
+  switch (edge) {
+    case "west":
+      return x >= size - halo;
+    case "east":
+      return x <= halo;
+    case "north":
+      return y >= size - halo;
+    case "south":
+      return y <= halo;
+  }
+}
+
+/** Continuous-world distance across an orthogonal border (same units as arena coords). */
+export function crossChunkDelta(
+  edge: BorderEdge,
+  px: number,
+  py: number,
+  nx: number,
+  ny: number,
+  size: number,
+): { dx: number; dy: number } {
+  switch (edge) {
+    case "west":
+      return { dx: px + (size - nx), dy: py - ny };
+    case "east":
+      return { dx: size - px + nx, dy: py - ny };
+    case "north":
+      return { dx: px - nx, dy: py + (size - ny) };
+    case "south":
+      return { dx: px - nx, dy: size - py + ny };
+  }
+}
+
+/** Map a neighbour-creature position into this chunk's local arena coords. */
+export function mapNeighborToLocalCoords(
+  edge: BorderEdge,
+  nx: number,
+  ny: number,
+  size: number,
+): { x: number; y: number } {
+  switch (edge) {
+    case "west":
+      return { x: nx - size, y: ny };
+    case "east":
+      return { x: size + nx, y: ny };
+    case "north":
+      return { x: nx, y: ny - size };
+    case "south":
+      return { x: nx, y: size + ny };
+  }
+}
+
 /** Map arena coords after crossing an orthogonal chunk border (continuous motion). */
 export function borderCrossArrivalCoords(
   departEdge: BorderEdge,

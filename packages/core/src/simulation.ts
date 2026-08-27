@@ -87,6 +87,7 @@ export class EvolutionSimulation {
         }),
       );
     }
+    this.linkPredationNeighbors();
     this.registry = new SpeciesRegistry(baseSeed);
     this.registry.refresh(this.allCreatures(), 0);
     this.events = new EventScheduler(baseSeed);
@@ -213,6 +214,18 @@ export class EvolutionSimulation {
       for (const c of eco.creaturesRef()) out.push(c);
     }
     return out;
+  }
+
+  private linkPredationNeighbors(): void {
+    for (let i = 0; i < this.ecosystems.length; i++) {
+      const n = chunkNeighbors(i);
+      this.ecosystems[i]!.linkPredationNeighbors({
+        west: n.west !== null ? this.ecosystems[n.west]! : null,
+        east: n.east !== null ? this.ecosystems[n.east]! : null,
+        north: n.north !== null ? this.ecosystems[n.north]! : null,
+        south: n.south !== null ? this.ecosystems[n.south]! : null,
+      });
+    }
   }
 
   private sampleHistory(): void {
