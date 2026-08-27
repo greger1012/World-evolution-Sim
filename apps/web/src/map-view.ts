@@ -421,7 +421,11 @@ export function chunkHintText(map: WorldMapData, chunkId: number, view: Readonly
 
 export function terrainAtCursor(map: WorldMapData, tx: number, ty: number): string {
   const t = map.tiles[ty * map.width + tx]!;
-  if (t.terrain === "ocean") return "Ocean — no life here";
+  if (t.terrain === "ocean") return "Ocean — impassable barrier";
+  if (t.terrain === "mountain" || t.terrain === "snow") {
+    const summary = summarizeChunk(map, t.chunkId);
+    return `${t.terrain} — harsh terrain · only large, armored, or energetic creatures cross · chunk ${t.chunkId} (${summary.dominant})`;
+  }
   const summary = summarizeChunk(map, t.chunkId);
   return `${t.terrain} · elev ${t.elevation.toFixed(2)} · fertility ${t.richness.toFixed(2)} · chunk ${t.chunkId} (${summary.dominant})`;
 }

@@ -1,6 +1,6 @@
 import { climateFoodFactor } from "./globe.js";
 import type { BorderEdge, ChunkTerrain, TerrainSample } from "./chunkterrain.js";
-import { TERRAIN_MOVE_COST, borderCrossArrivalCoords, chunkNeighbors } from "./chunkterrain.js";
+import { TERRAIN_MOVE_COST, borderCrossArrivalCoords, chunkNeighbors, isTerrainPassable, tileSample } from "./chunkterrain.js";
 import type { DramaKind } from "./drama.js";
 import type { DramaLog } from "./drama.js";
 import type { TerrainId } from "./worldmap.js";
@@ -152,13 +152,12 @@ const HEAT_THRESHOLD = 0.62;
 const COLD_STRESS = 0.18; // energy/sec * coldness / size
 const HEAT_STRESS = 0.06; // energy/sec * heat * size
 
-// Migration: a region's left/right edges connect to its neighbours. Crossing
-// is chancy (think mountain passes) and costs energy, so gene flow is real
-// but regional ecologies stay distinct.
+// Migration: orthogonal chunk borders only. Geography (ocean, mountains) gates
+// whether a creature can cross; passable borders preserve continuous motion.
 const MIGRATION_COST = 0.04;
 
-// Terrain: creatures avoid costly tiles (mountains, ocean) unless their genome
-// and condition give enough tolerance — evolved mountain specialists can pass.
+// Terrain: ocean is impassable; harsh land blocks creatures below their tolerance
+// (size, armor, speed, energy) — specialists evolve to cross mountains/snow.
 const TERRAIN_PROBE_ANGLES = [
   0,
   Math.PI / 4,
@@ -333,9 +332,9 @@ export class RegionEcosystem {
   private births = 0;
   private deaths = 0;
   private readonly dramaLog: DramaLog | null;
-  /** Throttle noisy death/migration feed entries at high sim speed. */
+  private readonly allTerrains: readonly ChunkTerrain[] | null;
+  /** Throttle noisy death feed entries at high sim speed. */
   private lastDeathDrama = -Infinity;
-  private lastMigrationDrama = -Infinity;
   private stepSimTime = 0;
 
   constructor(opts: {
@@ -347,6 +346,7 @@ export class RegionEcosystem {
     maxCreatures: number;
     chunkId?: number;
     terrain?: ChunkTerrain;
+    allTerrains?: readonly ChunkTerrain[];
     dramaLog?: DramaLog;
     /** Shared id allocator so ids stay unique across regions (migration). */
     idAlloc: () => number;
@@ -354,6 +354,7 @@ export class RegionEcosystem {
     this.size = opts.size;
     this.chunkId = opts.chunkId ?? 0;
     this.terrain = opts.terrain ?? null;
+    this.allTerrains = opts.allTerrains ?? null;
     this.richness = this.terrain?.meanRichness() ?? opts.richness;
     this.temperature = this.terrain?.meanTemperature() ?? opts.temperature;
     this.rng = makeRng(opts.seed);
@@ -423,9 +424,7 @@ export class RegionEcosystem {
   ): void {
     if (!this.dramaLog) return;
     if (kind === "death" && simTime - this.lastDeathDrama < 0.75) return;
-    if (kind === "migration" && simTime - this.lastMigrationDrama < 1.25) return;
     if (kind === "death") this.lastDeathDrama = simTime;
-    if (kind === "migration") this.lastMigrationDrama = simTime;
     this.dramaLog.push({
       kind,
       simTime,
@@ -545,10 +544,23 @@ export class RegionEcosystem {
       const x = this.rng() * this.size;
       const y = this.rng() * this.size;
       const s = this.sampleAt(x, y);
-      if (!s || s.terrain === "ocean") continue;
-      if (this.terrainDanger(s, this.terrainTolerance(probe)) <= 0) return { x, y };
+      if (!s || !this.canEnterTile(s, probe)) continue;
+      return { x, y };
     }
     return { x: this.rng() * this.size, y: this.rng() * this.size };
+  }
+
+  private sampleAtChunk(chunkId: number, arenaX: number, arenaY: number): TerrainSample | null {
+    const t =
+      this.allTerrains?.[chunkId] ?? (chunkId === this.chunkId ? this.terrain : null);
+    if (!t) return null;
+    return t.sample(arenaX, arenaY, this.size);
+  }
+
+  /** Whether this creature can stand on or enter a tile. */
+  private canEnterTile(sample: TerrainSample | null, c: Creature): boolean {
+    if (!sample) return false;
+    return isTerrainPassable(sample, this.terrainTolerance(c));
   }
 
   /** Max moveCost multiplier this creature willingly enters (1 = easy ground only). */
@@ -565,8 +577,9 @@ export class RegionEcosystem {
   private terrainDanger(sample: TerrainSample | null, tolerance: number): number {
     if (!sample) return 0;
     if (sample.terrain === "ocean") return TERRAIN_MOVE_COST.ocean;
+    if (isTerrainPassable(sample, tolerance)) return 0;
     const excess = sample.moveCost - tolerance * 1.15;
-    return excess > 0 ? excess * 1.8 : 0;
+    return excess > 0 ? excess * 1.8 : TERRAIN_MOVE_COST.mountain;
   }
 
   /** Probe ahead and steer away from terrain this creature cannot handle. */
@@ -597,34 +610,31 @@ export class RegionEcosystem {
     }
   }
 
-  /** If movement landed on ocean, step back toward passable ground. */
-  private nudgeOffOcean(c: Creature): void {
+  /** Step off impassable tiles (ocean, terrain above tolerance). */
+  private nudgeOffImpassable(c: Creature): void {
     if (!this.terrain) return;
-    if (this.sampleAt(c.x, c.y)?.terrain !== "ocean") return;
+    if (this.canEnterTile(this.sampleAt(c.x, c.y), c)) return;
 
     for (let step = 0; step < 10; step++) {
       c.x -= Math.cos(c.heading) * 1.1;
       c.y -= Math.sin(c.heading) * 1.1;
       c.x = clamp(c.x, 0.5, this.size - 0.5);
       c.y = clamp(c.y, 0.5, this.size - 0.5);
-      if (this.sampleAt(c.x, c.y)?.terrain !== "ocean") return;
+      if (this.canEnterTile(this.sampleAt(c.x, c.y), c)) return;
     }
 
-    const cx = this.size * 0.5;
-    const cy = this.size * 0.5;
-    for (let row = 0; row < (this.terrain.rows ?? 1); row++) {
-      for (let col = 0; col < (this.terrain.cols ?? 1); col++) {
+    for (let row = 0; row < this.terrain.rows; row++) {
+      for (let col = 0; col < this.terrain.cols; col++) {
         const cell = this.terrain.cell(col, row);
-        if (cell.terrain === "ocean") continue;
-        const x = ((col + 0.5) / this.terrain.cols) * this.size;
-        const y = ((row + 0.5) / this.terrain.rows) * this.size;
-        c.x = x;
-        c.y = y;
+        const sample = tileSample(cell);
+        if (!isTerrainPassable(sample, this.terrainTolerance(c))) continue;
+        c.x = ((col + 0.5) / this.terrain.cols) * this.size;
+        c.y = ((row + 0.5) / this.terrain.rows) * this.size;
         return;
       }
     }
-    c.x = cx;
-    c.y = cy;
+    c.x = this.size * 0.5;
+    c.y = this.size * 0.5;
   }
 
   get population(): number {
@@ -1116,9 +1126,13 @@ export class RegionEcosystem {
     const borderY =
       edge === "north" ? 0 : edge === "south" ? this.size : c.y;
     const tile = this.sampleAt(borderX, borderY);
-    if (!tile || tile.terrain === "ocean") return false;
+    if (!this.canEnterTile(tile, c)) return false;
 
-    const crossCost = MIGRATION_COST + (tile.moveCost - 1) * 0.05;
+    const arrived = borderCrossArrivalCoords(edge, this.size, c.x, c.y);
+    const destTile = this.sampleAtChunk(dest, arrived.x, arrived.y);
+    if (!this.canEnterTile(destTile, c)) return false;
+
+    const crossCost = MIGRATION_COST + (tile!.moveCost - 1) * 0.05;
     if (c.energy <= crossCost) return false;
 
     c.energy -= crossCost;
@@ -1132,10 +1146,28 @@ export class RegionEcosystem {
     const speedMul = tile0 ? 1 / Math.sqrt(tile0.moveCost) : 1;
     const sprint = isPredator(c.genome) ? PREDATOR_SPRINT : 1;
     const v = effectiveSpeed(c.genome) * MOVE_SPEED * sprint * speedMul;
-    c.x += Math.cos(c.heading) * v * dt;
-    c.y += Math.sin(c.heading) * v * dt;
+    const nx = c.x + Math.cos(c.heading) * v * dt;
+    const ny = c.y + Math.sin(c.heading) * v * dt;
 
-    // Map-grid edges: crossing enters the neighbouring chunk (N/S/E/W).
+    if (this.canEnterTile(this.sampleAt(nx, ny), c)) {
+      c.x = nx;
+      c.y = ny;
+    } else {
+      const slideX = this.canEnterTile(this.sampleAt(nx, c.y), c);
+      const slideY = this.canEnterTile(this.sampleAt(c.x, ny), c);
+      if (slideX && !slideY) {
+        c.x = nx;
+      } else if (slideY && !slideX) {
+        c.y = ny;
+      } else if (slideX && slideY) {
+        if (Math.abs(nx - c.x) >= Math.abs(ny - c.y)) c.x = nx;
+        else c.y = ny;
+      } else {
+        c.heading += (this.rng() - 0.5) * TURN_JITTER * dt * 2;
+      }
+    }
+
+    // Orthogonal chunk borders only — cross when geography allows.
     if (c.x < 0) {
       if (this.tryBorderCross(c, "west")) return;
       c.x = -c.x;
@@ -1156,7 +1188,7 @@ export class RegionEcosystem {
     }
     c.x = clamp(c.x, 0, this.size);
     c.y = clamp(c.y, 0, this.size);
-    this.nudgeOffOcean(c);
+    this.nudgeOffImpassable(c);
   }
 
   /** Eat plants (herbivory) and/or catch prey (carnivory), scaled by diet. */

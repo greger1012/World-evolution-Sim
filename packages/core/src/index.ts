@@ -4,6 +4,7 @@ export {
   borderCrossArrivalCoords,
   chunkNeighbors,
   edgeOpposite,
+  isTerrainPassable,
   tileSample,
 } from "./chunkterrain.js";
 export type { BorderEdge, TerrainSample } from "./chunkterrain.js";

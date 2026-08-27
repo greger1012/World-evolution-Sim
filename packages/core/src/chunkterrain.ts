@@ -18,6 +18,12 @@ export const TERRAIN_MOVE_COST: Record<TerrainId, number> = {
   lake: 1.2,
 };
 
+/** Whether a creature with the given tolerance can enter this tile. */
+export function isTerrainPassable(sample: TerrainSample, tolerance: number): boolean {
+  if (sample.terrain === "ocean") return false;
+  return sample.moveCost <= tolerance * 1.15;
+}
+
 /** Sample of terrain at a point in the regional arena. */
 export type TerrainSample = {
   terrain: TerrainId;

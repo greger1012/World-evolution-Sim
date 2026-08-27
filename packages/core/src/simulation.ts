@@ -66,8 +66,12 @@ export class EvolutionSimulation {
     this.drama = new DramaLog();
     this.ecosystems = [];
     const idAlloc = () => this.idCounter++;
+    const terrains: ChunkTerrain[] = [];
     for (let i = 0; i < config.regionCount; i++) {
-      const terrain = new ChunkTerrain(this.worldMap, i);
+      terrains.push(new ChunkTerrain(this.worldMap, i));
+    }
+    for (let i = 0; i < config.regionCount; i++) {
+      const terrain = terrains[i]!;
       this.ecosystems.push(
         new RegionEcosystem({
           size: config.patchSize,
@@ -78,6 +82,7 @@ export class EvolutionSimulation {
           maxCreatures: config.maxCreatures,
           chunkId: i,
           terrain,
+          allTerrains: terrains,
           dramaLog: this.drama,
           idAlloc,
         }),
