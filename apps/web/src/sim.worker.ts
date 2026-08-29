@@ -1,6 +1,7 @@
 import {
   defaultSimulationConfig,
   EvolutionSimulation,
+  fusedSimulationConfig,
 } from "@evo-world-sim/core";
 import type { MainToWorker, WorkerToMain } from "./protocol.js";
 
@@ -40,10 +41,10 @@ self.onmessage = (e: MessageEvent<MainToWorker>) => {
           sim = EvolutionSimulation.restore(msg.saved);
         } catch {
           post({ type: "loadFailed" });
-          sim = new EvolutionSimulation({ ...defaultSimulationConfig }, msg.seed);
+          sim = new EvolutionSimulation({ ...fusedSimulationConfig }, msg.seed);
         }
       } else {
-        sim = new EvolutionSimulation({ ...defaultSimulationConfig }, msg.seed);
+        sim = new EvolutionSimulation({ ...fusedSimulationConfig }, msg.seed);
       }
       last = performance.now();
       lastMeta = 0;
@@ -80,7 +81,7 @@ self.onmessage = (e: MessageEvent<MainToWorker>) => {
       if (sim) post({ type: "saved", data: sim.serialize(), reason: msg.reason });
       break;
     case "newWorld":
-      sim = new EvolutionSimulation({ ...defaultSimulationConfig }, msg.seed);
+      sim = new EvolutionSimulation({ ...fusedSimulationConfig }, msg.seed);
       last = performance.now();
       lastMeta = 0;
       break;

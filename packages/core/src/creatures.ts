@@ -1,5 +1,5 @@
 import { climateFoodFactor } from "./globe.js";
-import type { BorderEdge, ChunkTerrain, TerrainSample } from "./chunkterrain.js";
+import type { BorderEdge, ChunkTerrain, TerrainSample, WorldTerrain } from "./chunkterrain.js";
 import {
   PREDATION_HALO,
   TERRAIN_MOVE_COST,
@@ -14,7 +14,8 @@ import {
 } from "./chunkterrain.js";
 import type { DramaKind } from "./drama.js";
 import type { DramaLog } from "./drama.js";
-import type { TerrainId } from "./worldmap.js";
+import type { TerrainId, WorldMapData } from "./worldmap.js";
+import { chunkAtMapPosition, chunkTileBounds } from "./worldmap.js";
 import type { RegionModifiers } from "./events.js";
 import { DEFAULT_REGION_MODIFIERS } from "./events.js";
 import { SpatialGrid } from "./spatial.js";
@@ -333,12 +334,16 @@ function crossover(a: Genome, b: Genome, rng: () => number): Genome {
  */
 export class RegionEcosystem {
   readonly size: number;
+  readonly sizeY: number;
   readonly chunkId: number;
+  readonly fusedWorld: boolean;
   readonly richness: number;
   readonly temperature: number;
-  readonly terrain: ChunkTerrain | null;
+  readonly terrain: ChunkTerrain | WorldTerrain | null;
   private readonly rng: Rng;
   private readonly nextId: () => number;
+  private readonly worldMap: WorldMapData | null;
+  private modifierLookup: ((chunkId: number) => RegionModifiers) | null = null;
   private creatures: Creature[] = [];
   private food: Food[] = [];
   private emigrants: Emigrant[] = [];
@@ -364,18 +369,24 @@ export class RegionEcosystem {
 
   constructor(opts: {
     size: number;
+    sizeY?: number;
+    fusedWorld?: boolean;
+    worldMap?: WorldMapData;
     richness: number;
     temperature: number;
     seed: number;
     initialCreatures: number;
     chunkId?: number;
-    terrain?: ChunkTerrain;
+    terrain?: ChunkTerrain | WorldTerrain;
     allTerrains?: readonly ChunkTerrain[];
     dramaLog?: DramaLog;
     /** Shared id allocator so ids stay unique across regions (migration). */
     idAlloc: () => number;
   }) {
     this.size = opts.size;
+    this.sizeY = opts.sizeY ?? opts.size;
+    this.fusedWorld = opts.fusedWorld ?? false;
+    this.worldMap = opts.worldMap ?? null;
     this.chunkId = opts.chunkId ?? 0;
     this.terrain = opts.terrain ?? null;
     this.allTerrains = opts.allTerrains ?? null;
@@ -384,8 +395,8 @@ export class RegionEcosystem {
     this.rng = makeRng(opts.seed);
     this.nextId = opts.idAlloc;
     this.dramaLog = opts.dramaLog ?? null;
-    this.creatureGrid = new SpatialGrid<Creature>(opts.size, GRID_CELL, GRID_SLACK);
-    this.foodGrid = new SpatialGrid<Food>(opts.size, GRID_CELL, GRID_SLACK);
+    this.creatureGrid = new SpatialGrid<Creature>(opts.size, GRID_CELL, GRID_SLACK, this.sizeY);
+    this.foodGrid = new SpatialGrid<Food>(opts.size, GRID_CELL, GRID_SLACK, this.sizeY);
 
     const capacity = this.foodCapacity(DEFAULT_REGION_MODIFIERS);
     const startFood = Math.floor(capacity * 0.85);
@@ -451,7 +462,10 @@ export class RegionEcosystem {
     this.dramaLog.push({
       kind,
       simTime,
-      regionId: this.chunkId,
+      regionId:
+        this.fusedWorld && this.worldMap
+          ? chunkAtMapPosition(this.worldMap, ax, ay)
+          : this.chunkId,
       message,
       ax,
       ay,
@@ -502,9 +516,12 @@ export class RegionEcosystem {
   }
 
   private foodCapacity(mods: RegionModifiers): number {
+    const areaScale = this.fusedWorld ? (this.size * this.sizeY) / (60 * 60) : 1;
     const base = Math.max(
       6,
-      Math.floor(FOOD_BASE_CAPACITY * this.richness * climateFoodFactor(this.temperature)),
+      Math.floor(
+        FOOD_BASE_CAPACITY * this.richness * climateFoodFactor(this.temperature) * areaScale,
+      ),
     );
     return Math.max(3, Math.floor(base * mods.foodCapacityMul));
   }
@@ -524,7 +541,70 @@ export class RegionEcosystem {
 
   /** Wire orthogonally adjacent regions for cross-border hunting and fleeing. */
   linkPredationNeighbors(neighbors: PredationNeighbors): void {
+    if (this.fusedWorld) return;
     this.predationNeighbors = neighbors;
+  }
+
+  /** Per-chunk event modifiers when running as one fused arena. */
+  setModifierLookup(fn: (chunkId: number) => RegionModifiers): void {
+    this.modifierLookup = fn;
+  }
+
+  private modsForCreature(c: Creature, base: RegionModifiers): RegionModifiers {
+    if (!this.fusedWorld || !this.worldMap || !this.modifierLookup) return base;
+    return this.modifierLookup(chunkAtMapPosition(this.worldMap, c.x, c.y));
+  }
+
+  private inChunk(chunkId: number, x: number, y: number): boolean {
+    if (!this.worldMap) return true;
+    const { x0, y0, x1, y1 } = chunkTileBounds(this.worldMap, chunkId);
+    return x >= x0 && x < x1 && y >= y0 && y < y1;
+  }
+
+  /** Storm hits creatures and plants in one map chunk. */
+  applyStormInChunk(chunkId: number, severity: number, map: WorldMapData): void {
+    const killFrac = 0.12 + severity * 0.28;
+    for (const c of this.creatures) {
+      if (c.dead || !this.inChunk(chunkId, c.x, c.y)) continue;
+      if (this.rng() < killFrac) {
+        c.dead = true;
+        this.deaths++;
+      }
+    }
+    const foodKill = 0.18 + severity * 0.35;
+    for (const f of this.food) {
+      if (f.dead || !this.inChunk(chunkId, f.x, f.y)) continue;
+      if (this.rng() < foodKill) f.dead = true;
+    }
+  }
+
+  seedDiseaseInChunk(chunkId: number, severity: number, map: WorldMapData): void {
+    void map;
+    const chance = 0.1 + severity * 0.22;
+    let seeded = 0;
+    for (const c of this.creatures) {
+      if (c.dead || c.infection > 0.05 || !this.inChunk(chunkId, c.x, c.y)) continue;
+      if (this.rng() < chance) {
+        c.infection = 0.35 + this.rng() * severity * 0.55;
+        seeded++;
+      }
+    }
+    if (seeded > 0) return;
+    const live = this.creatures.filter(
+      (c) => !c.dead && c.infection <= 0.05 && this.inChunk(chunkId, c.x, c.y),
+    );
+    if (live.length === 0) return;
+    live[Math.floor(this.rng() * live.length)]!.infection =
+      0.35 + this.rng() * severity * 0.55;
+  }
+
+  applyDroughtInChunk(chunkId: number, severity: number, map: WorldMapData): void {
+    void map;
+    const wilt = 0.22 + severity * 0.38;
+    for (const f of this.food) {
+      if (f.dead || !this.inChunk(chunkId, f.x, f.y)) continue;
+      if (this.rng() < wilt) f.dead = true;
+    }
   }
 
   /** Record a kill that happened from a predator in another chunk. */
@@ -582,19 +662,21 @@ export class RegionEcosystem {
   }
 
   private sampleAt(x: number, y: number) {
-    return this.terrain?.sample(x, y, this.size) ?? null;
+    if (!this.terrain) return null;
+    if (this.fusedWorld) return (this.terrain as WorldTerrain).sample(x, y);
+    return (this.terrain as ChunkTerrain).sample(x, y, this.size);
   }
 
   private randomPoint(): Food {
     for (let attempt = 0; attempt < 14; attempt++) {
       const x = this.rng() * this.size;
-      const y = this.rng() * this.size;
+      const y = this.rng() * this.sizeY;
       const s = this.sampleAt(x, y);
       if (s && s.terrain !== "ocean" && s.foodFactor >= 0.12) {
         return { x, y, dead: false };
       }
     }
-    return { x: this.rng() * this.size, y: this.rng() * this.size, dead: false };
+    return { x: this.rng() * this.size, y: this.rng() * this.sizeY, dead: false };
   }
 
   /** Spawn location that avoids lethal or unaffordable terrain for this genome. */
@@ -602,15 +684,16 @@ export class RegionEcosystem {
     const probe = { energy: START_ENERGY, genome } as Creature;
     for (let attempt = 0; attempt < 20; attempt++) {
       const x = this.rng() * this.size;
-      const y = this.rng() * this.size;
+      const y = this.rng() * this.sizeY;
       const s = this.sampleAt(x, y);
       if (!s || !this.canEnterTile(s, probe)) continue;
       return { x, y };
     }
-    return { x: this.rng() * this.size, y: this.rng() * this.size };
+    return { x: this.rng() * this.size, y: this.rng() * this.sizeY };
   }
 
   private sampleAtChunk(chunkId: number, arenaX: number, arenaY: number): TerrainSample | null {
+    if (this.fusedWorld) return null;
     const t =
       this.allTerrains?.[chunkId] ?? (chunkId === this.chunkId ? this.terrain : null);
     if (!t) return null;
@@ -679,22 +762,34 @@ export class RegionEcosystem {
       c.x -= Math.cos(c.heading) * 1.1;
       c.y -= Math.sin(c.heading) * 1.1;
       c.x = clamp(c.x, 0.5, this.size - 0.5);
-      c.y = clamp(c.y, 0.5, this.size - 0.5);
+      c.y = clamp(c.y, 0.5, this.sizeY - 0.5);
       if (this.canEnterTile(this.sampleAt(c.x, c.y), c)) return;
     }
 
-    for (let row = 0; row < this.terrain.rows; row++) {
-      for (let col = 0; col < this.terrain.cols; col++) {
-        const cell = this.terrain.cell(col, row);
-        const sample = tileSample(cell);
-        if (!isTerrainPassable(sample, this.terrainTolerance(c))) continue;
-        c.x = ((col + 0.5) / this.terrain.cols) * this.size;
-        c.y = ((row + 0.5) / this.terrain.rows) * this.size;
-        return;
+    if (this.fusedWorld) {
+      for (let row = 0; row < this.terrain.rows; row++) {
+        for (let col = 0; col < this.terrain.cols; col++) {
+          const sample = (this.terrain as WorldTerrain).sample(col + 0.5, row + 0.5);
+          if (!isTerrainPassable(sample, this.terrainTolerance(c))) continue;
+          c.x = col + 0.5;
+          c.y = row + 0.5;
+          return;
+        }
+      }
+    } else {
+      const chunkTerrain = this.terrain as ChunkTerrain;
+      for (let row = 0; row < chunkTerrain.rows; row++) {
+        for (let col = 0; col < chunkTerrain.cols; col++) {
+          const sample = tileSample(chunkTerrain.cell(col, row));
+          if (!isTerrainPassable(sample, this.terrainTolerance(c))) continue;
+          c.x = ((col + 0.5) / chunkTerrain.cols) * this.size;
+          c.y = ((row + 0.5) / chunkTerrain.rows) * this.sizeY;
+          return;
+        }
       }
     }
     c.x = this.size * 0.5;
-    c.y = this.size * 0.5;
+    c.y = this.sizeY * 0.5;
   }
 
   get population(): number {
@@ -759,13 +854,27 @@ export class RegionEcosystem {
     }
     if (this.creatures.length > GRID_MIN_ITEMS) this.creatureGrid.rebuild(this.creatures);
 
-    if (mods.diseaseActive) this.spreadInfection(dt, mods.diseaseSeverity);
+    let diseaseActive = mods.diseaseActive;
+    let diseaseSeverity = mods.diseaseSeverity;
+    if (this.fusedWorld && this.modifierLookup) {
+      diseaseActive = false;
+      diseaseSeverity = 0;
+      for (let i = 0; i < 24; i++) {
+        const m = this.modifierLookup(i);
+        if (m.diseaseActive) {
+          diseaseActive = true;
+          diseaseSeverity = Math.max(diseaseSeverity, m.diseaseSeverity);
+        }
+      }
+    }
+    if (diseaseActive) this.spreadInfection(dt, diseaseSeverity);
 
     const list = this.creatures;
     const newborns: Creature[] = [];
 
     for (const c of list) {
       if (c.dead) continue;
+      const localMods = this.modsForCreature(c, mods);
 
       this.senseAndSteer(c, dt);
       this.move(c, dt);
@@ -783,7 +892,7 @@ export class RegionEcosystem {
       const cold = Math.max(0, COLD_THRESHOLD - temp);
       const heat = Math.max(0, temp - HEAT_THRESHOLD);
       const climateStress =
-        mods.climateStressMul *
+        localMods.climateStressMul *
         ((COLD_STRESS * cold) / g.size + HEAT_STRESS * heat * g.size);
       const cost =
         BASE_METABOLISM +
@@ -809,7 +918,7 @@ export class RegionEcosystem {
       }
       if (c.infection > 0) {
         c.health -= DISEASE_HEALTH_RATE * c.infection * dt;
-        if (!mods.diseaseActive) {
+        if (!localMods.diseaseActive) {
           c.infection = Math.max(0, c.infection - INFECTION_DECAY * dt);
         }
       }
@@ -829,7 +938,7 @@ export class RegionEcosystem {
 
       if (
         this.readyToMate(c) &&
-        list.length + newborns.length < this.reproductionCeiling(mods)
+        list.length + newborns.length < this.reproductionCeiling(localMods)
       ) {
         const mate = this.findMate(c, /*contactOnly*/ true);
         if (mate) {
@@ -950,7 +1059,7 @@ export class RegionEcosystem {
         energy,
         near.speciesId,
         clamp(near.x + (this.rng() - 0.5) * 2, 0, this.size),
-        clamp(near.y + (this.rng() - 0.5) * 2, 0, this.size),
+        clamp(near.y + (this.rng() - 0.5) * 2, 0, this.sizeY),
       ),
     );
   }
@@ -979,7 +1088,7 @@ export class RegionEcosystem {
     while (expected > 0) {
       if (expected >= 1 || this.rng() < expected) {
         const x = this.rng() * this.size;
-        const y = this.rng() * this.size;
+        const y = this.rng() * this.sizeY;
         const s = this.sampleAt(x, y);
         const weight = s?.foodFactor ?? 1;
         if (weight < 0.1 && this.rng() > weight) {
@@ -1133,7 +1242,7 @@ export class RegionEcosystem {
   /** Grid pruning pays only for crowded arenas and queries much smaller than
    * the arena; otherwise a plain scan of the backing array is faster. */
   private gridWorthIt(count: number, radius: number): boolean {
-    return count > GRID_MIN_ITEMS && (radius + GRID_SLACK) * 2 < this.size * 0.55;
+    return count > GRID_MIN_ITEMS && (radius + GRID_SLACK) * 2 < Math.max(this.size, this.sizeY) * 0.55;
   }
 
   /** Candidate creatures near a point: grid-pruned only when it pays off. */
@@ -1298,6 +1407,13 @@ export class RegionEcosystem {
       }
     }
 
+    if (this.fusedWorld) {
+      c.x = clamp(c.x, 0, this.size);
+      c.y = clamp(c.y, 0, this.sizeY);
+      this.nudgeOffImpassable(c);
+      return;
+    }
+
     // Orthogonal chunk borders only — cross when geography allows.
     if (c.x < 0) {
       if (this.tryBorderCross(c, "west")) return;
@@ -1318,7 +1434,7 @@ export class RegionEcosystem {
       c.heading = -c.heading;
     }
     c.x = clamp(c.x, 0, this.size);
-    c.y = clamp(c.y, 0, this.size);
+    c.y = clamp(c.y, 0, this.sizeY);
     this.nudgeOffImpassable(c);
   }
 

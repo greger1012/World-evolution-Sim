@@ -1,14 +1,15 @@
 import { RegionEcosystem } from "./creatures.js";
 import type { Creature, EcosystemState } from "./creatures.js";
-import { ChunkTerrain, chunkNeighbors } from "./chunkterrain.js";
+import { ChunkTerrain, WorldTerrain, chunkNeighbors } from "./chunkterrain.js";
 import { DramaLog } from "./drama.js";
-import { EventScheduler } from "./events.js";
+import { DEFAULT_REGION_MODIFIERS, EventScheduler } from "./events.js";
 import type { EventSchedulerState } from "./events.js";
 import { SpeciesRegistry } from "./species.js";
 import type { SpeciesRegistryState } from "./species.js";
-import { generateWorldMap } from "./worldmap.js";
+import { chunkAtMapPosition, generateWorldMap, summarizeChunk } from "./worldmap.js";
 import type { WorldMapData } from "./worldmap.js";
 import type {
+  CreatureView,
   HistorySample,
   ReadonlySimulationView,
   RegionLayer,
@@ -66,28 +67,50 @@ export class EvolutionSimulation {
     this.drama = new DramaLog();
     this.ecosystems = [];
     const idAlloc = () => this.idCounter++;
-    const terrains: ChunkTerrain[] = [];
-    for (let i = 0; i < config.regionCount; i++) {
-      terrains.push(new ChunkTerrain(this.worldMap, i));
-    }
-    for (let i = 0; i < config.regionCount; i++) {
-      const terrain = terrains[i]!;
+
+    if (config.worldLayout === "fused") {
+      const terrain = new WorldTerrain(this.worldMap);
       this.ecosystems.push(
         new RegionEcosystem({
-          size: config.patchSize,
+          size: this.worldMap.width,
+          sizeY: this.worldMap.height,
+          fusedWorld: true,
+          worldMap: this.worldMap,
           richness: terrain.meanRichness(),
           temperature: terrain.meanTemperature(),
-          seed: (baseSeed ^ ((i + 1) * 0x9e3779b1)) >>> 0,
-          initialCreatures: config.initialCreatures,
-          chunkId: i,
+          seed: baseSeed,
+          initialCreatures: config.initialCreatures * config.regionCount,
+          chunkId: 0,
           terrain,
-          allTerrains: terrains,
           dramaLog: this.drama,
           idAlloc,
         }),
       );
+    } else {
+      const terrains: ChunkTerrain[] = [];
+      for (let i = 0; i < config.regionCount; i++) {
+        terrains.push(new ChunkTerrain(this.worldMap, i));
+      }
+      for (let i = 0; i < config.regionCount; i++) {
+        const terrain = terrains[i]!;
+        this.ecosystems.push(
+          new RegionEcosystem({
+            size: config.patchSize,
+            richness: terrain.meanRichness(),
+            temperature: terrain.meanTemperature(),
+            seed: (baseSeed ^ ((i + 1) * 0x9e3779b1)) >>> 0,
+            initialCreatures: config.initialCreatures,
+            chunkId: i,
+            terrain,
+            allTerrains: terrains,
+            dramaLog: this.drama,
+            idAlloc,
+          }),
+        );
+      }
+      this.linkPredationNeighbors();
     }
-    this.linkPredationNeighbors();
+
     this.registry = new SpeciesRegistry(baseSeed);
     this.registry.refresh(this.allCreatures(), 0);
     this.events = new EventScheduler(baseSeed);
@@ -121,6 +144,25 @@ export class EvolutionSimulation {
 
   /** Chunk with the largest population of a species (for follow-camera). */
   findRegionForSpecies(speciesId: number): number | null {
+    if (this.config.worldLayout === "fused") {
+      const eco = this.ecosystems[0];
+      if (!eco) return null;
+      const counts = new Map<number, number>();
+      for (const c of eco.creaturesRef()) {
+        if (c.dead || c.migrated || c.speciesId !== speciesId) continue;
+        const chunk = chunkAtMapPosition(this.worldMap, c.x, c.y);
+        counts.set(chunk, (counts.get(chunk) ?? 0) + 1);
+      }
+      let bestId: number | null = null;
+      let best = 0;
+      for (const [chunk, n] of counts) {
+        if (n > best) {
+          best = n;
+          bestId = chunk;
+        }
+      }
+      return best > 0 ? bestId : null;
+    }
     let bestId: number | null = null;
     let best = 0;
     for (let i = 0; i < this.ecosystems.length; i++) {
@@ -135,6 +177,15 @@ export class EvolutionSimulation {
 
   /** Chunk currently holding a creature (for follow-camera across migration). */
   findRegionForCreature(creatureId: number): number | null {
+    if (this.config.worldLayout === "fused") {
+      const eco = this.ecosystems[0];
+      if (!eco) return null;
+      for (const c of eco.creaturesRef()) {
+        if (c.dead || c.migrated || c.id !== creatureId) continue;
+        return chunkAtMapPosition(this.worldMap, c.x, c.y);
+      }
+      return null;
+    }
     for (let i = 0; i < this.ecosystems.length; i++) {
       if (this.ecosystems[i]!.hasCreature(creatureId)) return i;
     }
@@ -250,28 +301,92 @@ export class EvolutionSimulation {
   }
 
   getView(): ReadonlySimulationView {
+    const layout = this.config.worldLayout === "fused" ? "fused" : "chunked";
     const regions: RegionState[] = new Array(this.config.regionCount);
+    const worldLayers: RegionLayer[] = new Array(this.config.regionCount);
     let total = 0;
     let divSum = 0;
     let pop = 0;
-    for (let i = 0; i < this.config.regionCount; i++) {
-      const eco = this.ecosystems[i]!;
-      const biomass = eco.biomass();
-      const diversity = eco.diversity();
-      const population = eco.population;
-      regions[i] = {
-        id: i,
-        biomass,
-        diversity,
-        population,
-        carnivores: eco.carnivoreCount,
-        temperature: eco.temperature,
-        biome: eco.chunkLabel(),
-        events: this.events.regionEvents(i, this.simTime),
-      };
-      total += biomass;
-      divSum += diversity;
-      pop += population;
+
+    if (layout === "fused") {
+      const eco = this.ecosystems[0]!;
+      const creatures = eco.creatureViews();
+      const food = eco.foodViews();
+      const layerCreatures: CreatureView[][] = Array.from({ length: this.config.regionCount }, () => []);
+      const layerFood: { x: number; y: number }[][] = Array.from(
+        { length: this.config.regionCount },
+        () => [],
+      );
+
+      for (const c of creatures) {
+        const chunk = chunkAtMapPosition(this.worldMap, c.x, c.y);
+        layerCreatures[chunk]!.push(c);
+      }
+      for (const f of food) {
+        const chunk = chunkAtMapPosition(this.worldMap, f.x, f.y);
+        layerFood[chunk]!.push(f);
+      }
+
+      for (let i = 0; i < this.config.regionCount; i++) {
+        const cs = layerCreatures[i]!;
+        const population = cs.length;
+        let carnivores = 0;
+        for (const c of cs) if (c.diet >= 0.5) carnivores++;
+        let diversity = 0;
+        if (cs.length >= 2) {
+          let mean = 0;
+          for (const c of cs) mean += c.radius;
+          mean /= cs.length;
+          if (mean > 0) {
+            let v = 0;
+            for (const c of cs) {
+              const d = c.radius - mean;
+              v += d * d;
+            }
+            diversity = Math.min(1, (Math.sqrt(v / cs.length) / mean) * 2.2);
+          }
+        }
+        const refPop = Math.max(8, eco.biomass() > 0 ? population / Math.max(0.05, eco.biomass()) : 50);
+        const biomass = Math.min(1, population / refPop);
+        regions[i] = {
+          id: i,
+          biomass,
+          diversity,
+          population,
+          carnivores,
+          temperature: eco.temperature,
+          biome: summarizeChunk(this.worldMap, i).dominant,
+          events: this.events.regionEvents(i, this.simTime),
+        };
+        worldLayers[i] = { creatures: cs, food: layerFood[i]! };
+        total += biomass;
+        divSum += diversity;
+        pop += population;
+      }
+    } else {
+      for (let i = 0; i < this.config.regionCount; i++) {
+        const eco = this.ecosystems[i]!;
+        const biomass = eco.biomass();
+        const diversity = eco.diversity();
+        const population = eco.population;
+        regions[i] = {
+          id: i,
+          biomass,
+          diversity,
+          population,
+          carnivores: eco.carnivoreCount,
+          temperature: eco.temperature,
+          biome: eco.chunkLabel(),
+          events: this.events.regionEvents(i, this.simTime),
+        };
+        worldLayers[i] = {
+          creatures: eco.creatureViews(),
+          food: eco.foodViews(),
+        };
+        total += biomass;
+        divSum += diversity;
+        pop += population;
+      }
     }
 
     const summary = {
@@ -283,19 +398,13 @@ export class EvolutionSimulation {
       livingSpecies: this.registry.livingCount(),
     };
 
-    const worldLayers: RegionLayer[] = new Array(this.config.regionCount);
-    for (let i = 0; i < this.config.regionCount; i++) {
-      const eco = this.ecosystems[i]!;
-      worldLayers[i] = {
-        creatures: eco.creatureViews(),
-        food: eco.foodViews(),
-      };
-    }
-
     const activeLayer =
       this.activeRegionId !== null ? worldLayers[this.activeRegionId]! : null;
-    const activeEco =
-      this.activeRegionId !== null ? this.ecosystems[this.activeRegionId]! : null;
+    const activeEco = this.ecosystems[0] ?? null;
+    const activeChunkTerrain =
+      layout === "fused" && this.activeRegionId !== null
+        ? new ChunkTerrain(this.worldMap, this.activeRegionId)
+        : null;
 
     return {
       summary,
@@ -306,10 +415,24 @@ export class EvolutionSimulation {
       activeCreatures: activeLayer?.creatures ?? null,
       activeFood: activeLayer?.food ?? null,
       activeStats: activeEco ? activeEco.stats() : null,
-      arenaSize: this.config.patchSize,
-      activeTerrain: activeEco ? activeEco.terrainViews() : null,
-      activeTerrainCols: activeEco ? activeEco.terrainCols() : 0,
-      activeTerrainRows: activeEco ? activeEco.terrainRows() : 0,
+      arenaSize: layout === "fused" ? this.worldMap.width : this.config.patchSize,
+      arenaHeight: layout === "fused" ? this.worldMap.height : this.config.patchSize,
+      worldLayout: layout,
+      activeTerrain: activeChunkTerrain
+        ? activeChunkTerrain.renderCells()
+        : activeEco
+          ? activeEco.terrainViews()
+          : null,
+      activeTerrainCols: activeChunkTerrain
+        ? activeChunkTerrain.cols
+        : activeEco
+          ? activeEco.terrainCols()
+          : 0,
+      activeTerrainRows: activeChunkTerrain
+        ? activeChunkTerrain.rows
+        : activeEco
+          ? activeEco.terrainRows()
+          : 0,
       recentDrama: this.drama.snapshot(),
     };
   }
@@ -334,24 +457,39 @@ export class EvolutionSimulation {
     const h = simSeconds / steps;
 
     const n = this.ecosystems.length;
+    const fused = this.config.worldLayout === "fused";
     for (let s = 0; s < steps; s++) {
       const t = this.simTime + s * h;
-      this.events.advance(t, h, n, this.ecosystems, this.drama);
-      for (let i = 0; i < n; i++) {
-        const mods = this.events.modifiersFor(i, t);
-        this.ecosystems[i]!.step(h, mods, t);
-      }
-      // Route border-crossers to orthogonally adjacent chunks on the map grid.
-      for (let i = 0; i < n; i++) {
-        const out = this.ecosystems[i]!.takeEmigrants();
-        const neighbors = chunkNeighbors(i);
-        for (const e of out) {
-          const dest = neighbors[e.edge];
-          if (dest === null || dest < 0 || dest >= n) continue;
-          this.ecosystems[dest]!.receiveMigrant({
-            creature: e.creature,
-            edge: e.edge,
-          });
+      if (fused) {
+        const eco = this.ecosystems[0]!;
+        const hooks = Array.from({ length: this.config.regionCount }, (_, i) => ({
+          applyStormStart: (severity: number) => eco.applyStormInChunk(i, severity, this.worldMap),
+          seedDiseaseOutbreak: (severity: number) =>
+            eco.seedDiseaseInChunk(i, severity, this.worldMap),
+          applyDroughtStart: (severity: number) =>
+            eco.applyDroughtInChunk(i, severity, this.worldMap),
+        }));
+        this.events.advance(t, h, this.config.regionCount, hooks, this.drama);
+        eco.setModifierLookup((chunkId) => this.events.modifiersFor(chunkId, t));
+        eco.step(h, DEFAULT_REGION_MODIFIERS, t);
+      } else {
+        this.events.advance(t, h, n, this.ecosystems, this.drama);
+        for (let i = 0; i < n; i++) {
+          const mods = this.events.modifiersFor(i, t);
+          this.ecosystems[i]!.step(h, mods, t);
+        }
+        // Route border-crossers to orthogonally adjacent chunks on the map grid.
+        for (let i = 0; i < n; i++) {
+          const out = this.ecosystems[i]!.takeEmigrants();
+          const neighbors = chunkNeighbors(i);
+          for (const e of out) {
+            const dest = neighbors[e.edge];
+            if (dest === null || dest < 0 || dest >= n) continue;
+            this.ecosystems[dest]!.receiveMigrant({
+              creature: e.creature,
+              edge: e.edge,
+            });
+          }
         }
       }
     }

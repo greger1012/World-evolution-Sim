@@ -15,9 +15,10 @@ export class SpatialGrid<T extends { x: number; y: number }> {
   private readonly cells: T[][];
   private readonly scratch: T[] = [];
 
-  constructor(arenaSize: number, cellSize: number, slack = 4) {
+  constructor(arenaWidth: number, cellSize: number, slack = 4, arenaHeight?: number) {
     this.cellSize = cellSize;
-    this.cols = Math.max(1, Math.ceil(arenaSize / cellSize));
+    const span = Math.max(arenaWidth, arenaHeight ?? arenaWidth);
+    this.cols = Math.max(1, Math.ceil(span / cellSize));
     this.slack = slack;
     this.cells = Array.from({ length: this.cols * this.cols }, () => []);
   }

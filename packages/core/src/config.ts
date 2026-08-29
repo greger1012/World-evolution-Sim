@@ -7,6 +7,13 @@ export const defaultSimulationConfig: SimulationConfig = {
   maxSubStep: 0.2,
   maxSubStepsPerFrame: 24,
   initialCreatures: 16,
+  worldLayout: "chunked",
+};
+
+/** Experimental: one continuous arena aligned 1:1 with map tiles (128×80). */
+export const fusedSimulationConfig: SimulationConfig = {
+  ...defaultSimulationConfig,
+  worldLayout: "fused",
 };
 
 /** UI-oriented speed presets; core accepts any positive multiplier. */

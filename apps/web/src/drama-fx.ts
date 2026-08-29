@@ -1,6 +1,6 @@
 import type { DramaEvent, DramaKind, ReadonlySimulationView, WorldMapData } from "@evo-world-sim/core";
 import { chunkTileBounds } from "@evo-world-sim/core";
-import { arenaToWorld } from "./map-view.js";
+import { creatureToWorld } from "./map-view.js";
 
 export type FxBurst = {
   id: number;
@@ -43,7 +43,7 @@ export class DramaFxLayer {
     for (const ev of view.recentDrama) {
       if (this.seenIds.has(ev.id)) continue;
       this.markSeen(ev.id);
-      const burst = this.eventToBurst(ev, map, arenaSize, now);
+      const burst = this.eventToBurst(ev, map, view, now);
       if (burst) this.bursts.push(burst);
     }
     this.bursts = this.bursts.filter((b) => now - b.t0 < FX_DURATION_MS);
@@ -61,12 +61,15 @@ export class DramaFxLayer {
   private eventToBurst(
     ev: DramaEvent,
     map: WorldMapData,
-    arenaSize: number,
+    view: ReadonlySimulationView,
     now: number,
   ): FxBurst | null {
     if (ev.kind === "migration") return null;
     if (ev.regionId >= 0 && ev.ax !== undefined && ev.ay !== undefined) {
-      const { wx, wy } = arenaToWorld(map, ev.regionId, arenaSize, ev.ax, ev.ay);
+      const { wx, wy } =
+        view.worldLayout === "fused"
+          ? { wx: ev.ax, wy: ev.ay }
+          : creatureToWorld(map, view, ev.regionId, { x: ev.ax, y: ev.ay });
       return { id: ev.id, kind: ev.kind, wx, wy, t0: now, hue: ev.hue };
     }
     if (ev.regionId >= 0) {

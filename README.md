@@ -150,6 +150,7 @@ Watch mode (package only): `npm run test -w @evo-world-sim/core -- --watch`
 | Geography as real barriers — ocean blocked, mountains/snow need tolerance (Phase G) | Working |
 | Food-limited populations — no hard maxCreatures cap (Phase H) | Working |
 | Cross-chunk predation halo — hunt and flee across borders (Phase I) | Working |
+| **Experimental branch:** fused world — single 128×80 map arena (`cursor/fused-world-map-4461`) | Preview |
 
 Feedback and contributions can wait until the core evolution model is further along; the public surface will keep changing.
 
