@@ -17,6 +17,7 @@ import {
   drawInspectOverlay,
   drawUnifiedWorldMap,
   arenaToWorld,
+  creatureToWorld,
   centerCameraOnWorldPoint,
   mapTileAtScreen,
   MAX_MAP_ZOOM,
@@ -246,6 +247,20 @@ function pickCreatureAtScreen(
   let pickedChunk: number | null = null;
   let bestD = Infinity;
   for (const chunkId of chunks) {
+    if (v.worldLayout === "fused") {
+      const wx = (sx - mapCamera.panX) / mapCamera.zoom;
+      const wy = (sy - mapCamera.panY) / mapCamera.zoom;
+      for (const c of v.worldLayers[chunkId]!.creatures) {
+        const d = Math.hypot(wx - c.x, wy - c.y);
+        const reach = c.radius + 0.8;
+        if (d <= reach && d < bestD) {
+          bestD = d;
+          picked = c.id;
+          pickedChunk = chunkId;
+        }
+      }
+      continue;
+    }
     const arena = screenToArena(worldMap, mapCamera, chunkId, v.arenaSize, sx, sy);
     if (!arena) continue;
     for (const c of v.worldLayers[chunkId]!.creatures) {
@@ -461,7 +476,10 @@ function flyToDramaEvent(ev: DramaEvent, arenaSize: number): void {
     mapCamera = zoomCameraToChunk(worldMap, mapCamera, ev.regionId, w, h);
     send({ type: "setActiveRegion", value: ev.regionId });
     if (ev.ax !== undefined && ev.ay !== undefined) {
-      const { wx, wy } = arenaToWorld(worldMap, ev.regionId, arenaSize, ev.ax, ev.ay);
+      const { wx, wy } =
+        view?.worldLayout === "fused"
+          ? { wx: ev.ax, wy: ev.ay }
+          : arenaToWorld(worldMap, ev.regionId, arenaSize, ev.ax, ev.ay);
       mapCamera = centerCameraOnWorldPoint(mapCamera, wx, wy, w, h);
     }
     mapHint.textContent = ev.message;
@@ -492,13 +510,7 @@ function applyFollowCamera(v: ReadonlySimulationView | null): void {
     if (mapCamera.zoom < DETAIL_TILE_PX) {
       mapCamera = zoomCameraToChunk(worldMap, mapCamera, found.chunkId, w, h);
     }
-    const { wx, wy } = arenaToWorld(
-      worldMap,
-      found.chunkId,
-      v.arenaSize,
-      found.creature.x,
-      found.creature.y,
-    );
+    const { wx, wy } = creatureToWorld(worldMap, v, found.chunkId, found.creature);
     mapCamera = centerCameraOnWorldPoint(mapCamera, wx, wy, w, h);
     return;
   }
@@ -533,7 +545,7 @@ function applyFollowCamera(v: ReadonlySimulationView | null): void {
     }
     cx /= matches.length;
     cy /= matches.length;
-    const { wx, wy } = arenaToWorld(worldMap, bestChunk, v.arenaSize, cx, cy);
+    const { wx, wy } = creatureToWorld(worldMap, v, bestChunk, { x: cx, y: cy });
     mapCamera = centerCameraOnWorldPoint(mapCamera, wx, wy, w, h);
   }
 }

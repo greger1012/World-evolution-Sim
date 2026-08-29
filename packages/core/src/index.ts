@@ -10,12 +10,13 @@ export {
   mapNeighborToLocalCoords,
   predatorInPredationHalo,
   preyInPredationHalo,
+  WorldTerrain,
   tileSample,
 } from "./chunkterrain.js";
 export type { BorderEdge, TerrainSample } from "./chunkterrain.js";
 export type { EventKind, EventSchedulerState, RegionModifiers } from "./events.js";
 export { EventScheduler } from "./events.js";
-export { defaultSimulationConfig, speedPresets } from "./config.js";
+export { defaultSimulationConfig, fusedSimulationConfig, speedPresets } from "./config.js";
 export { EvolutionSimulation } from "./simulation.js";
 export type { SavedWorld } from "./simulation.js";
 export { RegionEcosystem, isPredator, makeRng } from "./creatures.js";
@@ -36,6 +37,7 @@ export {
   MAP_CHUNK_COLS,
   MAP_CHUNK_COUNT,
   MAP_CHUNK_ROWS,
+  chunkAtMapPosition,
   chunkTileBounds,
   generateWorldMap,
   getMapTile,

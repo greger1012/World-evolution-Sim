@@ -106,6 +106,70 @@ export class ChunkTerrain {
   }
 }
 
+/** Full-map terrain for a fused single-arena simulation (1:1 map tile coords). */
+export class WorldTerrain {
+  readonly chunkId = 0;
+  readonly cols: number;
+  readonly rows: number;
+  private readonly map: WorldMapData;
+
+  constructor(map: WorldMapData) {
+    this.map = map;
+    this.cols = map.width;
+    this.rows = map.height;
+  }
+
+  /** Sample terrain at map-tile coordinates. */
+  sample(arenaX: number, arenaY: number): TerrainSample {
+    const tx = Math.min(this.cols - 1, Math.max(0, Math.floor(arenaX)));
+    const ty = Math.min(this.rows - 1, Math.max(0, Math.floor(arenaY)));
+    return tileSample(this.map.tiles[ty * this.cols + tx]!);
+  }
+
+  meanRichness(): number {
+    let s = 0;
+    let n = 0;
+    for (const t of this.map.tiles) {
+      if (t.terrain === "ocean") continue;
+      s += t.richness;
+      n++;
+    }
+    return n > 0 ? s / n : 0.5;
+  }
+
+  meanTemperature(): number {
+    let s = 0;
+    let n = 0;
+    for (const t of this.map.tiles) {
+      if (t.terrain === "ocean") continue;
+      s += t.temperature;
+      n++;
+    }
+    return n > 0 ? s / n : 0.5;
+  }
+
+  dominantLabel(): string {
+    const counts = new Map<TerrainId, number>();
+    for (const t of this.map.tiles) {
+      if (t.terrain === "ocean") continue;
+      counts.set(t.terrain, (counts.get(t.terrain) ?? 0) + 1);
+    }
+    let best: TerrainId = "plains";
+    let n = 0;
+    for (const [k, v] of counts) {
+      if (v > n) {
+        n = v;
+        best = k;
+      }
+    }
+    return best;
+  }
+
+  renderCells(): { terrain: TerrainId; richness: number }[] {
+    return this.map.tiles.map((t) => ({ terrain: t.terrain, richness: t.richness }));
+  }
+}
+
 export function tileSample(t: MapTile): TerrainSample {
   const moveCost = TERRAIN_MOVE_COST[t.terrain];
   const foodFactor =

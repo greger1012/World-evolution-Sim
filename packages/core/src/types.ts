@@ -86,6 +86,8 @@ export type SimulationConfig = {
   maxSubStepsPerFrame: number;
   /** Creatures seeded into each region at start. */
   initialCreatures: number;
+  /** Chunked arenas (24 regions) or one continuous map-sized world. */
+  worldLayout?: "chunked" | "fused";
 };
 
 /** Heritable traits. Colors/behaviour derive from these. */
@@ -208,4 +210,8 @@ export type ReadonlySimulationView = {
   activeTerrainRows: number;
   /** Recent noteworthy moments for the natural-history feed and FX. */
   recentDrama: readonly DramaEvent[];
+  /** How creature arena coordinates map to the world map. */
+  worldLayout: "chunked" | "fused";
+  /** Arena height when `worldLayout` is fused (map tile units). */
+  arenaHeight: number;
 };

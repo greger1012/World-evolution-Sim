@@ -468,6 +468,13 @@ export function chunkTileBounds(
   return { x0, y0, x1, y1 };
 }
 
+export function chunkAtMapPosition(map: WorldMapData, x: number, y: number): number {
+  const tx = Math.min(map.width - 1, Math.max(0, Math.floor(x)));
+  const ty = Math.min(map.height - 1, Math.max(0, Math.floor(y)));
+  const chunkId = map.tiles[ty * map.width + tx]!.chunkId;
+  return chunkId >= 0 ? chunkId : 0;
+}
+
 /** Dominant terrain and mean richness for a simulation chunk. */
 export function summarizeChunk(map: WorldMapData, chunkId: number): {
   dominant: TerrainId;

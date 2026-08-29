@@ -204,21 +204,37 @@ export function drawArenaTerrain(
   }
 }
 
+/** Map creature arena coordinates into map-tile world space. */
+export function creatureToWorld(
+  map: WorldMapData,
+  view: ReadonlySimulationView,
+  chunkId: number,
+  c: { x: number; y: number },
+): { wx: number; wy: number } {
+  if (view.worldLayout === "fused") {
+    return { wx: c.x, wy: c.y };
+  }
+  return arenaToWorld(map, chunkId, view.arenaSize, c.x, c.y);
+}
+
 function drawCreaturesInWorld(
   ctx: CanvasRenderingContext2D,
   map: WorldMapData,
   chunkId: number,
-  arenaSize: number,
+  view: ReadonlySimulationView,
   creatures: readonly CreatureView[],
   selectedId: number | null,
   tilePx: number,
 ): CreatureView | null {
-  const { x0, y0, x1, y1 } = chunkTileBounds(map, chunkId);
-  const cw = x1 - x0;
-  const ch = y1 - y0;
-  const unit = Math.min(cw, ch) / arenaSize;
+  const unit =
+    view.worldLayout === "fused"
+      ? 1
+      : (() => {
+          const { x0, y0, x1, y1 } = chunkTileBounds(map, chunkId);
+          return Math.min(x1 - x0, y1 - y0) / view.arenaSize;
+        })();
 
-  const toWorld = (c: CreatureView) => arenaToWorld(map, chunkId, arenaSize, c.x, c.y);
+  const toWorld = (c: CreatureView) => creatureToWorld(map, view, chunkId, c);
   drawSocialLinks(ctx, creatures, toWorld, tilePx);
 
   let selected: CreatureView | null = null;
@@ -249,16 +265,20 @@ function drawLifeCreatures(
   map: WorldMapData,
   view: ReadonlySimulationView,
   chunks: readonly number[],
-  arenaSize: number,
   tilePx: number,
 ): void {
   for (const chunk of chunks) {
     const layer = view.worldLayers[chunk];
     if (!layer || layer.creatures.length === 0) continue;
-    const { x0, y0, x1, y1 } = chunkTileBounds(map, chunk);
-    const unit = Math.min(x1 - x0, y1 - y0) / arenaSize;
+    const unit =
+      view.worldLayout === "fused"
+        ? 1
+        : (() => {
+            const { x0, y0, x1, y1 } = chunkTileBounds(map, chunk);
+            return Math.min(x1 - x0, y1 - y0) / view.arenaSize;
+          })();
     for (const c of layer.creatures) {
-      const { wx, wy } = arenaToWorld(map, chunk, arenaSize, c.x, c.y);
+      const { wx, wy } = creatureToWorld(map, view, chunk, c);
       const predator = c.diet >= 0.5;
       ctx.fillStyle = predator
         ? `hsla(${c.hue}, 75%, 58%, 0.72)`
@@ -275,19 +295,22 @@ function drawFoodInWorld(
   ctx: CanvasRenderingContext2D,
   map: WorldMapData,
   chunkId: number,
-  arenaSize: number,
+  view: ReadonlySimulationView,
   food: readonly { x: number; y: number }[],
   tilePx: number,
 ): void {
-  const { x0, y0, x1, y1 } = chunkTileBounds(map, chunkId);
-  const cw = x1 - x0;
-  const ch = y1 - y0;
-  const unit = Math.min(cw, ch) / arenaSize;
+  const unit =
+    view.worldLayout === "fused"
+      ? 1
+      : (() => {
+          const { x0, y0, x1, y1 } = chunkTileBounds(map, chunkId);
+          return Math.min(x1 - x0, y1 - y0) / view.arenaSize;
+        })();
   const foodR = Math.max(0.06, 0.35 * unit);
 
   ctx.fillStyle = "#6fcf7a";
   for (const f of food) {
-    const { wx, wy } = arenaToWorld(map, chunkId, arenaSize, f.x, f.y);
+    const { wx, wy } = creatureToWorld(map, view, chunkId, f);
     ctx.beginPath();
     ctx.arc(wx, wy, foodR, 0, Math.PI * 2);
     ctx.fill();
@@ -359,7 +382,7 @@ export function drawUnifiedWorldMap(
       ctx.strokeRect(x0 + 0.5, y0 + 0.5, x1 - x0 - 1, y1 - y0 - 1);
     }
     if (lifeMode) {
-      drawLifeCreatures(ctx, map, view, visibleChunks, view.arenaSize, tilePx);
+      drawLifeCreatures(ctx, map, view, visibleChunks, tilePx);
     }
   }
 
@@ -368,14 +391,14 @@ export function drawUnifiedWorldMap(
       const layer = view!.worldLayers[chunk];
       if (!layer) continue;
       if (layer.food.length > 0) {
-        drawFoodInWorld(ctx, map, chunk, view!.arenaSize, layer.food, tilePx);
+        drawFoodInWorld(ctx, map, chunk, view!, layer.food, tilePx);
       }
       if (layer.creatures.length > 0) {
         const sel = drawCreaturesInWorld(
           ctx,
           map,
           chunk,
-          view!.arenaSize,
+          view!,
           layer.creatures,
           opts.selectedCreatureId,
           tilePx,
@@ -402,7 +425,9 @@ export function drawUnifiedWorldMap(
   ctx.fillStyle = "#8b95a8";
   ctx.textAlign = "left";
   const legend = detailMode
-    ? "Seamless world — pan across regions · click creatures to inspect"
+    ? view?.worldLayout === "fused"
+      ? "Fused world — one continuous map · pan and zoom freely"
+      : "Seamless world — pan across regions · click creatures to inspect"
     : lifeMode
       ? "Life layer — real creature positions · zoom in for detail"
       : "Drag to pan · scroll to zoom · geography is the only border";
